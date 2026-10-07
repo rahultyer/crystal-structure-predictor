@@ -1,2 +1,1184 @@
 # crystal-structure-predictor
 Predicting the crystal structure that a given chemical composition adopts is one of the central unsolved problems of materials science. The stable structure is the global minimum of the Gibbs free energy $G(T,P)$ over all arrangements of the atoms, a search on a potential-energy surface whose number of local minima grows exponentially with the number of atoms in the cell. This paper develops the theory needed to understand, approximate and automate that search. We first review crystallographic description (lattices, space groups, reciprocal space) and the thermodynamics of phase stability (enthalpy, vibrational and configurational free energy, convex hulls, pressure-driven transitions). We then derive the physics of cohesion in ionic, covalent and metallic solids, from density-functional theory down to closed-form electrostatic models (Madelung, Born--Mayer, Kapustinskii). On this basis we derive the classical crystal-chemical rules (radius ratios, Pauling's rules, bond valence, the Goldschmidt and Bartel tolerance factors, and the geometry of the spinel, wurtzite, rutile and corundum families). We then describe global optimisation methods and modern machine learning: composition-based classifiers, graph neural network interatomic potentials and diffusion-based generative models. Finally, we present a two-tier implementation: a transparent rule-based engine running in a web browser, and a server pipeline that generates candidates by prototype substitution, relaxes them with a universal machine-learned potential and ranks them by enthalpy and distance to the convex hull. On a reference set of 64 compounds the rule engine reproduces the experimental structure type in 55 cases, the correct structural family in 3 more, and the lattice parameter with a mean absolute error of 1.6\%, while explicitly flagging the compositions outside its domain of validity
+[index.html](https://github.com/user-attachments/files/33174573/index.html)
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Crystal structure predictor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#E9EDF1; --surface:#F7F9FB; --ink:#16212C; --muted:#566475; --line:#C8D0D9; --soft:#DCE3EA;
+  --accent:#0E6E73; --accent-ink:#FFFFFF; --good:#1F7A4A; --warn:#9A5B00; --bad:#A63A2E;
+  --viewer:#DDE4EB;
+  --sans:'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --cond:'IBM Plex Sans Condensed', 'Arial Narrow', 'IBM Plex Sans', system-ui, sans-serif;
+  --mono:'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10161D; --surface:#18212B; --ink:#E4EAF0; --muted:#94A3B3; --line:#2A3644; --soft:#202B37;
+    --accent:#4FC1C6; --accent-ink:#06282A; --good:#5BC98C; --warn:#E3A84B; --bad:#EF8174; --viewer:#141C25;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10161D; --surface:#18212B; --ink:#E4EAF0; --muted:#94A3B3; --line:#2A3644; --soft:#202B37;
+  --accent:#4FC1C6; --accent-ink:#06282A; --good:#5BC98C; --warn:#E3A84B; --bad:#EF8174; --viewer:#141C25;
+}
+html{ scroll-padding-top:env(safe-area-inset-top,0px); }
+*,*::before,*::after{ box-sizing:inherit; }
+body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased; }
+.wrap{ max-width:1240px; margin:0 auto; padding:28px clamp(16px,4vw,40px) 56px; }
+a{ color:var(--accent); }
+:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+header.top{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 24px; margin-bottom:20px; }
+header.top h1{ font-family:var(--cond); font-weight:600; font-size:1.35rem; letter-spacing:.01em; margin:0; }
+header.top p{ margin:0; color:var(--muted); font-size:.95rem; max-width:62ch; }
+
+/* input bar */
+form.query{ display:grid; grid-template-columns:minmax(0,1fr) 120px 120px auto; gap:12px; align-items:end;
+  background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.field label{ display:block; font-size:.82rem; color:var(--muted); margin-bottom:4px; }
+.field input{ width:100%; font:inherit; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.field input:focus{ border-color:var(--accent); outline:none; box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+#formula{ font-family:var(--cond); font-size:1.6rem; font-weight:600; padding:6px 12px; letter-spacing:.01em; }
+.unit{ position:relative; }
+.unit input{ padding-right:44px; }
+.unit span{ position:absolute; right:12px; bottom:11px; color:var(--muted); font-size:.85rem; pointer-events:none; }
+button.primary{ font:inherit; font-weight:600; background:var(--accent); color:var(--accent-ink); border:0; border-radius:8px; padding:12px 20px; cursor:pointer; white-space:nowrap; }
+button.primary:hover{ filter:brightness(1.07); }
+.examples{ grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:.85rem; color:var(--muted); }
+.examples button{ font:inherit; font-family:var(--cond); font-weight:500; font-size:.92rem; color:var(--ink); background:transparent; border:1px solid var(--line); border-radius:999px; padding:2px 10px; cursor:pointer; }
+.examples button:hover{ border-color:var(--accent); color:var(--accent); }
+
+/* result layout */
+.result{ display:grid; grid-template-columns:minmax(0,5fr) minmax(0,7fr); gap:20px; margin-top:20px; }
+.summary{ min-width:0; }
+.formula-big{ font-family:var(--cond); font-weight:700; font-size:clamp(3rem,7vw,5.2rem); line-height:.95; letter-spacing:-.01em; margin:4px 0 6px; overflow-wrap:anywhere; }
+.formula-big sub{ font-size:.5em; vertical-align:-.08em; margin-left:.02em; }
+.proto{ font-size:1.25rem; font-weight:500; margin:0 0 4px; }
+.sgline{ color:var(--muted); margin:0 0 16px; }
+.sgline b{ color:var(--ink); font-weight:600; }
+dl.params{ display:flex; flex-wrap:wrap; background:var(--surface); border:1px solid var(--line); border-radius:10px; overflow:hidden; margin:0 0 14px; }
+dl.params div{ flex:1 1 30%; min-width:110px; padding:8px 12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); margin:0 -1px -1px 0; }
+dl.params dt{ font-size:.78rem; color:var(--muted); }
+dl.params dd{ margin:0; font-variant-numeric:tabular-nums; font-weight:500; }
+.conf{ display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:10px; background:var(--soft); margin-bottom:12px; font-size:.92rem; }
+.badge{ font-weight:600; font-size:.8rem; padding:2px 9px; border-radius:999px; white-space:nowrap; border:1px solid currentColor; }
+.badge.High{ color:var(--good); } .badge.Medium{ color:var(--warn); } .badge.Low{ color:var(--bad); }
+.ref{ border-left:3px solid var(--accent); padding:4px 0 4px 12px; font-size:.92rem; margin:0 0 12px; }
+.ref.diff{ border-left-color:var(--warn); }
+.ref strong{ font-weight:600; }
+.notes{ margin:0; padding:0; list-style:none; font-size:.9rem; color:var(--muted); }
+.notes li{ padding:6px 0 6px 18px; position:relative; border-top:1px solid var(--line); }
+.notes li::before{ content:""; position:absolute; left:2px; top:14px; width:7px; height:7px; border-radius:50%; background:var(--warn); }
+.errorbox{ background:var(--surface); border:1px solid var(--line); border-left:4px solid var(--bad); border-radius:10px; padding:14px 16px; }
+.errorbox h2{ font-size:1.05rem; margin:0 0 6px; }
+.errorbox p{ margin:0 0 6px; }
+
+/* viewer */
+.viewer{ position:relative; min-width:0; background:var(--viewer); border:1px solid var(--line); border-radius:14px; overflow:hidden; min-height:420px; display:flex; flex-direction:column; }
+#canvasHost{ flex:1; min-height:380px; position:relative; touch-action:none; cursor:grab; }
+#canvasHost:active{ cursor:grabbing; }
+#canvasHost canvas{ display:block; width:100%; height:100%; }
+.vbar{ display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; justify-content:space-between; padding:10px 12px; border-top:1px solid var(--line); background:var(--surface); }
+.legend{ display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.86rem; }
+.legend span{ display:inline-flex; align-items:center; gap:6px; }
+.legend i{ width:12px; height:12px; border-radius:50%; display:inline-block; border:1px solid rgba(0,0,0,.25); }
+.vctl{ display:flex; gap:6px; flex-wrap:wrap; }
+.vctl button{ font:inherit; font-size:.82rem; color:var(--ink); background:transparent; border:1px solid var(--line); border-radius:6px; padding:3px 9px; cursor:pointer; }
+.vctl button[aria-pressed="true"]{ background:var(--ink); color:var(--surface); border-color:var(--ink); }
+.vhint{ position:absolute; left:12px; top:10px; font-size:.78rem; color:var(--muted); pointer-events:none; }
+.vempty{ position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); text-align:center; padding:24px; font-size:.95rem; }
+
+/* tabs */
+.panel{ margin-top:20px; background:var(--surface); border:1px solid var(--line); border-radius:14px; }
+[role="tablist"]{ display:flex; gap:2px; border-bottom:1px solid var(--line); padding:0 8px; overflow-x:auto; }
+[role="tab"]{ font:inherit; font-size:.95rem; background:none; border:0; border-bottom:2px solid transparent; color:var(--muted); padding:12px 12px 10px; cursor:pointer; white-space:nowrap; }
+[role="tab"][aria-selected="true"]{ color:var(--ink); border-bottom-color:var(--accent); font-weight:500; }
+[role="tabpanel"]{ padding:18px 20px 22px; }
+ol.why{ margin:0; padding-left:1.4em; max-width:78ch; }
+ol.why li{ margin:0 0 8px; }
+ol.why li::marker{ color:var(--muted); font-variant-numeric:tabular-nums; }
+table{ border-collapse:collapse; width:100%; font-size:.93rem; }
+th,td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th{ font-weight:500; color:var(--muted); font-size:.85rem; }
+td.num{ font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:500; }
+td.help{ color:var(--muted); font-size:.88rem; }
+.scroll{ overflow-x:auto; }
+.xrd svg{ width:100%; height:auto; display:block; }
+.xrd .axis{ stroke:var(--line); }
+.xrd text{ fill:var(--muted); font-family:var(--sans); font-size:11px; }
+.xrd .stick{ stroke:var(--accent); stroke-width:1.2; }
+.xrd .prof{ fill:none; stroke:var(--ink); stroke-width:1.1; opacity:.55; }
+.xrd .lab{ fill:var(--ink); font-size:10.5px; }
+.muted{ color:var(--muted); }
+.small{ font-size:.86rem; }
+textarea#cif{ width:100%; min-height:260px; font-family:var(--mono); font-size:.82rem; line-height:1.45; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:12px; resize:vertical; }
+.rowbtn{ display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+.rowbtn button{ font:inherit; font-size:.9rem; background:var(--ink); color:var(--surface); border:0; border-radius:7px; padding:7px 14px; cursor:pointer; }
+
+/* method */
+.method{ margin-top:28px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; font-size:.93rem; color:var(--muted); }
+.method h2{ font-family:var(--cond); font-weight:600; font-size:1.05rem; color:var(--ink); margin:0 0 6px; }
+.method p{ margin:0 0 8px; max-width:68ch; }
+
+@media (max-width:860px){
+  form.query{ grid-template-columns:1fr 1fr; }
+  form.query .field.f{ grid-column:1/-1; }
+  form.query button.primary{ grid-column:1/-1; }
+  .result{ grid-template-columns:1fr; }
+  .viewer{ min-height:340px; } #canvasHost{ min-height:300px; }
+  .method{ grid-template-columns:1fr; }
+}
+@media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Crystal structure predictor</h1>
+    <p>Enter a composition and conditions. The tool balances charges, applies crystal-chemistry rules, builds a 3D unit cell, and estimates lattice energy and a powder XRD pattern.</p>
+  </header>
+
+  <form class="query" id="q" autocomplete="off">
+    <div class="field f">
+      <label for="formula">Chemical formula</label>
+      <input id="formula" name="formula" value="SrTiO3" spellcheck="false" aria-describedby="fhelp">
+    </div>
+    <div class="field unit">
+      <label for="pressure">Pressure</label>
+      <input id="pressure" type="number" min="0" max="500" step="any" value="0" inputmode="decimal"><span>GPa</span>
+    </div>
+    <div class="field unit">
+      <label for="temp">Temperature</label>
+      <input id="temp" type="number" min="0" max="5000" step="any" value="298" inputmode="decimal"><span>K</span>
+    </div>
+    <button class="primary" type="submit">Predict structure</button>
+    <div class="examples" id="fhelp">Try
+      <button type="button">SrTiO3</button><button type="button">NaCl</button><button type="button">GaN</button>
+      <button type="button">MgAl2O4</button><button type="button">TiO2</button><button type="button">CaF2</button>
+      <button type="button">Al2O3</button><button type="button">FeTiO3</button><button type="button">Sr2TiO4</button>
+      <button type="button">CsPbI3</button><button type="button">Cu2O</button><button type="button">Cu3Au</button><button type="button">Si</button>
+    </div>
+  </form>
+
+  <section class="result" aria-live="polite">
+    <div class="summary" id="summary"></div>
+    <div class="viewer">
+      <div id="canvasHost" aria-label="Interactive 3D unit cell. Drag to rotate, scroll to zoom." role="img">
+        <div class="vhint" id="vhint">Drag to rotate · scroll to zoom</div>
+      </div>
+      <div class="vbar">
+        <div class="legend" id="legend"></div>
+        <div class="vctl">
+          <button type="button" id="bSuper" aria-pressed="false">2×2×2 cells</button>
+          <button type="button" id="bSpin" aria-pressed="true">Spin</button>
+          <button type="button" id="bReset">Reset view</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel">
+    <div role="tablist" aria-label="Result details">
+      <button role="tab" id="t-why" aria-controls="p-why" aria-selected="true">Why this structure</button>
+      <button role="tab" id="t-th" aria-controls="p-th" aria-selected="false" tabindex="-1">Thermodynamics</button>
+      <button role="tab" id="t-xrd" aria-controls="p-xrd" aria-selected="false" tabindex="-1">XRD pattern</button>
+      <button role="tab" id="t-cif" aria-controls="p-cif" aria-selected="false" tabindex="-1">CIF file</button>
+    </div>
+    <div role="tabpanel" id="p-why" aria-labelledby="t-why"></div>
+    <div role="tabpanel" id="p-th" aria-labelledby="t-th" hidden></div>
+    <div role="tabpanel" id="p-xrd" aria-labelledby="t-xrd" hidden></div>
+    <div role="tabpanel" id="p-cif" aria-labelledby="t-cif" hidden></div>
+  </section>
+
+  <section class="method">
+    <div>
+      <h2>How the prediction is made</h2>
+      <p>This is a transparent rule-based baseline. It assigns oxidation states, looks up Shannon ionic radii, then applies radius-ratio rules, Pauling's rules, the Goldschmidt and Bartel tolerance factors for perovskites, and simple pressure rules. Lattice parameters come from bond-length sums and empirical relations, and each result is checked against a table of experimental structures when one exists.</p>
+      <p>Thermodynamic values are estimates (Kapustinskii lattice energy, Madelung constants). They describe the predicted structure but do not compare it against every competing phase.</p>
+    </div>
+    <div>
+      <h2>Where machine learning comes in</h2>
+      <p>The production version replaces these rules with a model trained on Materials Project data: a composition classifier for the structure type, then candidate structures relaxed with a machine-learned interatomic potential (CHGNet or MACE) and ranked by energy above the convex hull. That pipeline runs on a Python server; this page is its front end and fallback.</p>
+      <p>Results here are starting hypotheses. Confirm important ones with DFT or experiment.</p>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ===== Crystal structure prediction core (rule-based baseline) =====
+// Element data: [Z, Pauling electronegativity, atomic mass]
+const EL = {
+  H:[1,2.20,1.008], Li:[3,0.98,6.94], Be:[4,1.57,9.012], B:[5,2.04,10.81], C:[6,2.55,12.011], N:[7,3.04,14.007],
+  O:[8,3.44,15.999], F:[9,3.98,18.998], Na:[11,0.93,22.990], Mg:[12,1.31,24.305], Al:[13,1.61,26.982], Si:[14,1.90,28.086],
+  P:[15,2.19,30.974], S:[16,2.58,32.06], Cl:[17,3.16,35.45], K:[19,0.82,39.098], Ca:[20,1.00,40.078], Sc:[21,1.36,44.956],
+  Ti:[22,1.54,47.867], V:[23,1.63,50.942], Cr:[24,1.66,51.996], Mn:[25,1.55,54.938], Fe:[26,1.83,55.845], Co:[27,1.88,58.933],
+  Ni:[28,1.91,58.693], Cu:[29,1.90,63.546], Zn:[30,1.65,65.38], Ga:[31,1.81,69.723], Ge:[32,2.01,72.63], As:[33,2.18,74.922],
+  Se:[34,2.55,78.971], Br:[35,2.96,79.904], Rb:[37,0.82,85.468], Sr:[38,0.95,87.62], Y:[39,1.22,88.906], Zr:[40,1.33,91.224],
+  Nb:[41,1.6,92.906], Mo:[42,2.16,95.95], Ru:[44,2.2,101.07], Rh:[45,2.28,102.91], Pd:[46,2.20,106.42], Ag:[47,1.93,107.87],
+  Cd:[48,1.69,112.41], In:[49,1.78,114.82], Sn:[50,1.96,118.71], Sb:[51,2.05,121.76], Te:[52,2.1,127.60], I:[53,2.66,126.90],
+  Cs:[55,0.79,132.91], Ba:[56,0.89,137.33], La:[57,1.10,138.91], Ce:[58,1.12,140.12], Pr:[59,1.13,140.91], Nd:[60,1.14,144.24],
+  Sm:[62,1.17,150.36], Gd:[64,1.20,157.25], Hf:[72,1.3,178.49], Ta:[73,1.5,180.95], W:[74,2.36,183.84], Re:[75,1.9,186.21],
+  Os:[76,2.2,190.23], Ir:[77,2.20,192.22], Pt:[78,2.28,195.08], Au:[79,2.54,196.97], Hg:[80,2.0,200.59], Tl:[81,1.62,204.38],
+  Pb:[82,2.33,207.2], Bi:[83,2.02,208.98]
+};
+
+// Shannon effective ionic radii (Å) for cations: {oxidation: {CN: r}}
+const R = {
+  Li:{1:{4:0.59,6:0.76,8:0.92}}, Na:{1:{4:0.99,6:1.02,8:1.18,12:1.39}}, K:{1:{6:1.38,8:1.51,12:1.64}},
+  Rb:{1:{6:1.52,8:1.61,12:1.72}}, Cs:{1:{6:1.67,8:1.74,12:1.88}}, Ag:{1:{2:0.67,4:1.00,6:1.15,8:1.28}},
+  Cu:{1:{2:0.46,4:0.60,6:0.77},2:{4:0.57,6:0.73}}, Au:{1:{6:1.37}}, Tl:{1:{6:1.50,8:1.59,12:1.70},3:{6:0.885}},
+  Be:{2:{4:0.27,6:0.45}}, Mg:{2:{4:0.57,6:0.72,8:0.89}}, Ca:{2:{6:1.00,8:1.12,12:1.34}}, Sr:{2:{6:1.18,8:1.26,12:1.44}},
+  Ba:{2:{6:1.35,8:1.42,12:1.61}}, Zn:{2:{4:0.60,6:0.74}}, Cd:{2:{4:0.78,6:0.95,8:1.10}}, Hg:{2:{4:0.96,6:1.02}},
+  Pb:{2:{6:1.19,8:1.29,12:1.49},4:{6:0.775}}, Sn:{2:{6:1.18,12:1.35},4:{4:0.55,6:0.69,8:0.81}},
+  Mn:{2:{4:0.66,6:0.83},3:{6:0.645},4:{6:0.53}}, Fe:{2:{4:0.63,6:0.78},3:{4:0.49,6:0.645}},
+  Co:{2:{4:0.58,6:0.745},3:{6:0.61}}, Ni:{2:{4:0.55,6:0.69},3:{6:0.60}}, Pd:{2:{6:0.86}},
+  Ti:{3:{6:0.67},4:{4:0.42,6:0.605,8:0.74}}, V:{3:{6:0.64},4:{6:0.58},5:{4:0.355,6:0.54}}, Cr:{3:{6:0.615}},
+  Al:{3:{4:0.39,6:0.535}}, Ga:{3:{4:0.47,6:0.62}}, In:{3:{4:0.62,6:0.80}}, Sc:{3:{6:0.745,8:0.87}},
+  Y:{3:{6:0.90,8:1.019}}, La:{3:{6:1.032,8:1.16,12:1.36}}, Ce:{3:{6:1.01,8:1.143,12:1.34},4:{6:0.87,8:0.97}},
+  Pr:{3:{6:0.99,8:1.126}}, Nd:{3:{6:0.983,8:1.109,12:1.27}}, Sm:{3:{6:0.958,8:1.079,12:1.24}}, Gd:{3:{6:0.938,8:1.053}},
+  Bi:{3:{6:1.03,8:1.17}}, Sb:{3:{6:0.76},5:{6:0.60}}, B:{3:{4:0.11,6:0.27}}, Si:{4:{4:0.26,6:0.40}},
+  Ge:{4:{4:0.39,6:0.53}}, Zr:{4:{6:0.72,8:0.84}}, Hf:{4:{6:0.71,8:0.83}}, Nb:{5:{6:0.64}}, Ta:{5:{6:0.64}},
+  Mo:{6:{4:0.41,6:0.59}}, W:{6:{4:0.42,6:0.60}}, Re:{6:{6:0.55}}, Ru:{4:{6:0.62}}, Ir:{4:{6:0.625}}, Pt:{4:{6:0.625}},
+  Rh:{3:{6:0.665}}, Ga_:null
+};
+delete R.Ga_;
+// Anions: charge and radii by CN
+const AN = {
+  O:{q:-2,r:{2:1.35,3:1.36,4:1.38,6:1.40,8:1.42}}, F:{q:-1,r:{2:1.285,3:1.30,4:1.31,6:1.33}},
+  Cl:{q:-1,r:{6:1.81}}, Br:{q:-1,r:{6:1.96}}, I:{q:-1,r:{6:2.20}}, S:{q:-2,r:{6:1.84}}, Se:{q:-2,r:{6:1.98}},
+  Te:{q:-2,r:{6:2.21}}, N:{q:-3,r:{4:1.46,6:1.46}}, P:{q:-3,r:{6:2.12}}, As:{q:-3,r:{6:2.22}}, C:{q:-4,r:{6:2.60}}
+};
+// Most common oxidation states (used to break ties in charge balancing)
+const COMMON = { Fe:[2,3], Ti:[4], Mn:[2,3,4], Co:[2,3], Ni:[2], Cu:[1,2], V:[5,3,4], Cr:[3], Ce:[3,4], Pb:[2],
+  Sn:[4,2], Sb:[3,5], Tl:[1], Pd:[2], Ru:[4], Ir:[4], Pt:[4] };
+// Tetrahedral covalent radii (Pauling / Van Vechten) for sp3-bonded compounds
+const TET = { Zn:1.31,Cd:1.48,Hg:1.48,Cu:1.35,Ag:1.52,Be:1.06,Mg:1.40,B:0.88,Al:1.26,Ga:1.26,In:1.44,C:0.77,Si:1.17,
+  Ge:1.22,Sn:1.40,N:0.70,P:1.10,As:1.18,Sb:1.36,O:0.66,S:1.04,Se:1.14,Te:1.32,F:0.64,Cl:0.99,Br:1.11,I:1.28 };
+// 12-coordinate metallic radii (Å)
+const MET = { Ni:1.246,Al:1.432,Cu:1.278,Zn:1.394,Au:1.442,Fe:1.274,Co:1.252,Ti:1.462,Pt:1.387,Pd:1.376,Ag:1.445,
+  Cr:1.282,Mn:1.27,Ga:1.411,Sn:1.62,Mg:1.60,Zr:1.603,Nb:1.468,Si:1.32,Ge:1.37,In:1.66,Pb:1.75,Li:1.56,Na:1.91,
+  K:2.35,Ca:1.97,Sr:2.15,Ba:2.24,V:1.346,Mo:1.40,W:1.41,Ta:1.47,Hf:1.58,Sc:1.64,Y:1.80,La:1.87,Rh:1.345,Ir:1.357,Ru:1.339,Cd:1.57,Be:1.13 };
+
+// Experimental structures of the elements at ambient conditions
+const ELEMENTS = {
+  fcc:{Al:4.0495,Cu:3.6149,Ag:4.0853,Au:4.0782,Ni:3.5240,Pd:3.8907,Pt:3.9242,Pb:4.9502,Ca:5.5884,Sr:6.0849,Rh:3.8034,Ir:3.8390,Ce:5.1610},
+  bcc:{Li:3.51,Na:4.2906,K:5.328,Rb:5.585,Cs:6.141,Fe:2.8665,Cr:2.8846,Mo:3.1470,W:3.1652,V:3.0300,Nb:3.3004,Ta:3.3013,Ba:5.028},
+  hcp:{Mg:[3.2094,5.2108],Ti:[2.9508,4.6855],Zn:[2.6649,4.9468],Cd:[2.9794,5.6186],Co:[2.5071,4.0695],Zr:[3.2316,5.1475],
+       Hf:[3.1964,5.0511],Be:[2.2858,3.5843],Sc:[3.3088,5.2680],Y:[3.6474,5.7306],Ru:[2.7059,4.2815],Re:[2.7610,4.4560],
+       Os:[2.7341,4.3197],Gd:[3.6336,5.7810]},
+  diamond:{C:3.5668,Si:5.4310,Ge:5.6579,Sn:6.4892}
+};
+
+// Experimental reference structures (ambient) used to check the rule-based prediction
+const KNOWN = {
+  NaCl:{p:'rocksalt',sg:'Fm-3m',a:5.640}, KCl:{p:'rocksalt',sg:'Fm-3m',a:6.293}, LiF:{p:'rocksalt',sg:'Fm-3m',a:4.027},
+  MgO:{p:'rocksalt',sg:'Fm-3m',a:4.212}, CaO:{p:'rocksalt',sg:'Fm-3m',a:4.811}, NiO:{p:'rocksalt',sg:'Fm-3m',a:4.177},
+  PbS:{p:'rocksalt',sg:'Fm-3m',a:5.936}, AgCl:{p:'rocksalt',sg:'Fm-3m',a:5.550}, KBr:{p:'rocksalt',sg:'Fm-3m',a:6.600},
+  CsCl:{p:'cscl',sg:'Pm-3m',a:4.123}, CsBr:{p:'cscl',sg:'Pm-3m',a:4.286}, CsI:{p:'cscl',sg:'Pm-3m',a:4.567},
+  ZnS:{p:'zincblende',sg:'F-43m',a:5.409}, GaAs:{p:'zincblende',sg:'F-43m',a:5.653}, InP:{p:'zincblende',sg:'F-43m',a:5.869},
+  CdTe:{p:'zincblende',sg:'F-43m',a:6.481}, CuCl:{p:'zincblende',sg:'F-43m',a:5.416}, GaP:{p:'zincblende',sg:'F-43m',a:5.451},
+  ZnO:{p:'wurtzite',sg:'P6₃mc',a:3.250,c:5.207}, GaN:{p:'wurtzite',sg:'P6₃mc',a:3.189,c:5.185},
+  AlN:{p:'wurtzite',sg:'P6₃mc',a:3.112,c:4.982}, BeO:{p:'wurtzite',sg:'P6₃mc',a:2.698,c:4.379},
+  CaF2:{p:'fluorite',sg:'Fm-3m',a:5.463}, CeO2:{p:'fluorite',sg:'Fm-3m',a:5.411}, SrF2:{p:'fluorite',sg:'Fm-3m',a:5.800},
+  BaF2:{p:'fluorite',sg:'Fm-3m',a:6.200},
+  ZrO2:{p:'baddeleyite',sg:'P2₁/c',name:'Baddeleyite (monoclinic)',a:5.150,b:5.212,c:5.317},
+  TiO2:{p:'rutile',sg:'P4₂/mnm',a:4.594,c:2.959}, SnO2:{p:'rutile',sg:'P4₂/mnm',a:4.737,c:3.186},
+  MgF2:{p:'rutile',sg:'P4₂/mnm',a:4.621,c:3.052}, MnO2:{p:'rutile',sg:'P4₂/mnm',a:4.398,c:2.873},
+  SiO2:{p:'quartz',sg:'P3₂21',name:'α-Quartz (trigonal)',a:4.913,c:5.405},
+  Al2O3:{p:'corundum',sg:'R-3c',a:4.759,c:12.991}, Fe2O3:{p:'corundum',sg:'R-3c',a:5.035,c:13.747},
+  Cr2O3:{p:'corundum',sg:'R-3c',a:4.959,c:13.594}, Y2O3:{p:'bixbyite',sg:'Ia-3',name:'Bixbyite',a:10.604},
+  In2O3:{p:'bixbyite',sg:'Ia-3',name:'Bixbyite',a:10.117},
+  SrTiO3:{p:'perovskite',sg:'Pm-3m',a:3.905}, BaTiO3:{p:'perovskite-t',sg:'P4mm',name:'Tetragonal perovskite',a:3.992,c:4.036,apc:4.006},
+  CaTiO3:{p:'perovskite-o',sg:'Pnma',name:'Orthorhombic perovskite',a:5.442,b:7.640,c:5.380,apc:3.822},
+  LaAlO3:{p:'perovskite-r',sg:'R-3c',name:'Rhombohedral perovskite',a:5.365,c:13.11,apc:3.790},
+  KNbO3:{p:'perovskite-o',sg:'Amm2',name:'Orthorhombic perovskite',a:3.973,b:5.695,c:5.721,apc:4.016},
+  LaMnO3:{p:'perovskite-o',sg:'Pnma',name:'Orthorhombic perovskite',a:5.742,b:7.668,c:5.532,apc:3.937},
+  FeTiO3:{p:'ilmenite',sg:'R-3',a:5.088,c:14.09}, MgTiO3:{p:'ilmenite',sg:'R-3',a:5.054,c:13.90},
+  LiNbO3:{p:'lithium-niobate',sg:'R3c',name:'LiNbO₃-type',a:5.148,c:13.863},
+  CsPbI3:{p:'delta',sg:'Pnma',name:'δ-phase (yellow, non-perovskite)',a:10.46,b:4.80,c:17.78},
+  MgAl2O4:{p:'spinel',sg:'Fd-3m',a:8.083}, Fe3O4:{p:'spinel',sg:'Fd-3m',a:8.396}, ZnFe2O4:{p:'spinel',sg:'Fd-3m',a:8.441},
+  Co3O4:{p:'spinel',sg:'Fd-3m',a:8.084}, NiFe2O4:{p:'spinel',sg:'Fd-3m',a:8.339},
+  Mg2SiO4:{p:'olivine',sg:'Pbnm',name:'Olivine (forsterite)',a:4.756,b:10.207,c:5.980},
+  Sr2TiO4:{p:'k2nif4',sg:'I4/mmm',a:3.884,c:12.60}, La2NiO4:{p:'k2nif4',sg:'I4/mmm',a:3.86,c:12.68},
+  Li2O:{p:'antifluorite',sg:'Fm-3m',a:4.611}, Na2O:{p:'antifluorite',sg:'Fm-3m',a:5.55}, Li2S:{p:'antifluorite',sg:'Fm-3m',a:5.708},
+  Cu2O:{p:'cuprite',sg:'Pn-3m',a:4.270}, ReO3:{p:'reo3',sg:'Pm-3m',a:3.748},
+  NiAl:{p:'b2',sg:'Pm-3m',a:2.887}, CuZn:{p:'b2',sg:'Pm-3m',a:2.95}, Cu3Au:{p:'l12',sg:'Pm-3m',a:3.749}, Ni3Al:{p:'l12',sg:'Pm-3m',a:3.572}
+};
+
+const PROTO = {
+  rocksalt:{name:'Rock-salt (NaCl-type)',sg:'Fm-3m',num:225,sys:'cubic',M:1.7476},
+  cscl:{name:'Caesium chloride (CsCl-type)',sg:'Pm-3m',num:221,sys:'cubic',M:1.7627},
+  zincblende:{name:'Zinc blende (sphalerite)',sg:'F-43m',num:216,sys:'cubic',M:1.6381},
+  wurtzite:{name:'Wurtzite',sg:'P6₃mc',num:186,sys:'hexagonal',M:1.6413},
+  fluorite:{name:'Fluorite (CaF₂-type)',sg:'Fm-3m',num:225,sys:'cubic',M:2.5194},
+  antifluorite:{name:'Anti-fluorite',sg:'Fm-3m',num:225,sys:'cubic',M:2.5194},
+  rutile:{name:'Rutile (TiO₂-type)',sg:'P4₂/mnm',num:136,sys:'tetragonal',M:2.408},
+  cristobalite:{name:'Corner-sharing tetrahedral network (ideal cristobalite)',sg:'Fd-3m',num:227,sys:'cubic'},
+  cuprite:{name:'Cuprite (Cu₂O-type)',sg:'Pn-3m',num:224,sys:'cubic',M:2.2213},
+  reo3:{name:'ReO₃-type',sg:'Pm-3m',num:221,sys:'cubic'},
+  corundum:{name:'Corundum (α-Al₂O₃-type)',sg:'R-3c',num:167,sys:'trigonal',M:4.1719},
+  ilmenite:{name:'Ilmenite (FeTiO₃-type)',sg:'R-3',num:148,sys:'trigonal'},
+  perovskite:{name:'Cubic perovskite',sg:'Pm-3m',num:221,sys:'cubic'},
+  'perovskite-o':{name:'Orthorhombic (tilted) perovskite',sg:'Pnma',num:62,sys:'orthorhombic'},
+  'perovskite-t':{name:'Distorted perovskite (tetragonal / hexagonal)',sg:'P4mm or P6₃/mmc',num:99,sys:'tetragonal'},
+  spinel:{name:'Spinel (MgAl₂O₄-type)',sg:'Fd-3m',num:227,sys:'cubic'},
+  k2nif4:{name:'Layered perovskite (K₂NiF₄-type)',sg:'I4/mmm',num:139,sys:'tetragonal'},
+  fcc:{name:'Face-centred cubic (Cu-type)',sg:'Fm-3m',num:225,sys:'cubic'},
+  bcc:{name:'Body-centred cubic (W-type)',sg:'Im-3m',num:229,sys:'cubic'},
+  hcp:{name:'Hexagonal close-packed (Mg-type)',sg:'P6₃/mmc',num:194,sys:'hexagonal'},
+  diamond:{name:'Diamond cubic',sg:'Fd-3m',num:227,sys:'cubic'},
+  b2:{name:'B2 ordered intermetallic (CsCl-type)',sg:'Pm-3m',num:221,sys:'cubic'},
+  l12:{name:'L1₂ ordered intermetallic (Cu₃Au-type)',sg:'Pm-3m',num:221,sys:'cubic'}
+};
+
+// ---------- Formula parsing ----------
+function gcd(a,b){ return b ? gcd(b, a % b) : a; }
+function parseFormula(input){
+  const s = String(input||'').replace(/\s+/g,'');
+  if(!s) throw new Error('Enter a chemical formula, for example SrTiO3.');
+  let i = 0;
+  const num = () => { const m = s.slice(i).match(/^\d*\.?\d+/); if(m){ i += m[0].length; return parseFloat(m[0]); } return 1; };
+  const group = () => {
+    const c = {};
+    while(i < s.length){
+      const ch = s[i];
+      if(ch === '(' || ch === '['){
+        i++; const sub = group();
+        if(s[i] !== ')' && s[i] !== ']') throw new Error('A bracket is not closed. Check the parentheses in the formula.');
+        i++; const n = num();
+        for(const k in sub) c[k] = (c[k]||0) + sub[k]*n;
+      } else if(ch === ')' || ch === ']'){ break; }
+      else {
+        const m = s.slice(i).match(/^[A-Z][a-z]?/);
+        if(!m) throw new Error(`"${ch}" is not part of an element symbol. Element symbols start with a capital letter, e.g. Fe2O3.`);
+        i += m[0].length; const n = num();
+        c[m[0]] = (c[m[0]]||0) + n;
+      }
+    }
+    return c;
+  };
+  const comp = group();
+  if(i < s.length) throw new Error('There is an extra closing bracket in the formula.');
+  for(const e in comp){ if(!EL[e]) throw new Error(`${e} is not an element this tool knows. Check the spelling (e.g. "Co" for cobalt, "CO" is carbon + oxygen).`); }
+  const vals = Object.values(comp);
+  if(vals.some(v => Math.abs(v - Math.round(v)) > 1e-6)) throw new Error('Use whole-number subscripts (e.g. Fe2O3 rather than FeO1.5).');
+  const g = vals.map(Math.round).reduce(gcd);
+  for(const e in comp) comp[e] = Math.round(comp[e]) / g;
+  return { comp, units: g };
+}
+const SUBS = '₀₁₂₃₄₅₆₇₈₉';
+const sub = n => n === 1 ? '' : String(n).split('').map(d => SUBS[+d] ?? d).join('');
+function formulaOrder(comp){
+  return Object.keys(comp).sort((a,b) => EL[a][1] - EL[b][1] || EL[a][0] - EL[b][0]);
+}
+function prettyFormula(comp){ return formulaOrder(comp).map(e => e + sub(comp[e])).join(''); }
+function plainFormula(comp){ return formulaOrder(comp).map(e => e + (comp[e] === 1 ? '' : comp[e])).join(''); }
+function knownKey(comp){
+  const k = Object.keys(comp).sort().map(e => e + comp[e]).join('');
+  for(const f in KNOWN){ try{ const c = parseFormula(f).comp; if(Object.keys(c).sort().map(e => e + c[e]).join('') === k) return f; }catch(e){} }
+  return null;
+}
+
+// ---------- Radii ----------
+function radius(el, ox, cn){
+  const t = ox < 0 ? (AN[el] && AN[el].r) : (R[el] && R[el][ox]);
+  if(!t) return null;
+  if(t[cn] != null) return { r: t[cn], approx: false };
+  const cns = Object.keys(t).map(Number).sort((a,b) => a - b);
+  const lo = cns.filter(c => c < cn).pop(), hi = cns.find(c => c > cn);
+  if(lo != null && hi != null){ const f = (cn - lo) / (hi - lo); return { r: t[lo] + f*(t[hi] - t[lo]), approx: true }; }
+  if(lo != null) return { r: t[lo] + 0.05*(cn - lo), approx: true };
+  return { r: t[hi] - 0.05*(hi - cn), approx: true };
+}
+const rr = (el, ox, cn) => { const x = radius(el, ox, cn); return x ? x.r : NaN; };
+
+// ---------- Charge balancing ----------
+function assignOxidation(comp){
+  const els = Object.keys(comp);
+  if(els.length === 1) return { kind:'element' };
+  const anions = els.filter(e => AN[e]).sort((a,b) => EL[b][1] - EL[a][1]);
+  const metalsOnly = !anions.length;
+  if(metalsOnly) return { kind:'intermetallic' };
+  const X = anions[0];
+  const cats = els.filter(e => e !== X);
+  for(const c of cats){
+    if(!R[c]){
+      if(AN[c]) return { kind:'unsupported', reason:`The formula has two anion-forming elements (${X} and ${c}). Mixed-anion compounds are outside this rule set.` };
+      return { kind:'unsupported', reason:`No ionic radius data for ${c} as a cation, so the size rules can't be applied.` };
+    }
+  }
+  const neg = comp[X] * Math.abs(AN[X].q);
+  const sols = [];
+  (function rec(k, sum, pick, pen){
+    if(k === cats.length){ if(sum === neg) sols.push({ pick:[...pick], pen }); return; }
+    const c = cats[k];
+    for(const ox of Object.keys(R[c]).map(Number)){
+      const p = (COMMON[c] && !COMMON[c].includes(ox)) ? 1 : 0;
+      pick.push(ox); rec(k+1, sum + ox*comp[c], pick, pen + p); pick.pop();
+    }
+  })(0, 0, [], 0);
+  if(sols.length){
+    sols.sort((a,b) => a.pen - b.pen);
+    const s = sols[0];
+    return { kind:'ionic', X, qX: AN[X].q, nX: comp[X], cations: cats.map((c,i) => ({ el:c, ox:s.pick[i], n:comp[c] })), mixed:false };
+  }
+  if(cats.length === 1){
+    const c = cats[0], n = comp[c], avg = neg / n, lo = Math.floor(avg), hi = lo + 1;
+    if(R[c][lo] && R[c][hi]){
+      const nHi = neg - lo*n, nLo = n - nHi;
+      if(nHi > 0 && nLo > 0) return { kind:'ionic', X, qX:AN[X].q, nX:comp[X], mixed:true,
+        cations:[{ el:c, ox:lo, n:nLo }, { el:c, ox:hi, n:nHi }] };
+    }
+  }
+  return { kind:'unsupported', reason:`No combination of common oxidation states makes ${prettyFormula(comp)} charge-neutral.` };
+}
+
+// ---------- Geometry helpers ----------
+const D2R = Math.PI/180;
+function cellVectors(p){
+  const { a, b, c, al, be, ga } = p;
+  const ca = Math.cos(al*D2R), cb = Math.cos(be*D2R), cg = Math.cos(ga*D2R), sg = Math.sin(ga*D2R);
+  const cx = c*cb, cy = c*(ca - cb*cg)/sg, cz = Math.sqrt(Math.max(c*c - cx*cx - cy*cy, 1e-9));
+  return [[a,0,0],[b*cg,b*sg,0],[cx,cy,cz]];
+}
+const toCart = (f, M) => [0,1,2].map(i => f[0]*M[0][i] + f[1]*M[1][i] + f[2]*M[2][i]);
+const wrap = v => { let x = v - Math.floor(v); if(x > 1 - 1e-6) x = 0; return Math.abs(x) < 1e-6 ? 0 : x; };
+const cross = (u,v) => [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+const dot = (u,v) => u[0]*v[0] + u[1]*v[1] + u[2]*v[2];
+const cubic = a => ({ a, b:a, c:a, al:90, be:90, ga:90 });
+const tetra = (a,c) => ({ a, b:a, c, al:90, be:90, ga:90 });
+const hexa = (a,c) => ({ a, b:a, c, al:90, be:90, ga:120 });
+
+function makeAtoms(list){
+  // list: [{el, ox, site, f:[...]}]; wraps and removes duplicates
+  const out = [];
+  for(const at of list){
+    const f = at.f.map(wrap);
+    if(!out.some(o => o.el === at.el && o.f.every((v,i) => { const d = Math.abs(v - f[i]); return d < 1e-3 || d > 1 - 1e-3; })))
+      out.push({ ...at, f });
+  }
+  return out;
+}
+function expand(ops, centering, sites){
+  const list = [];
+  for(const s of sites) for(const op of ops) for(const t of centering){
+    const p = op(s.f); list.push({ ...s, f:[p[0]+t[0], p[1]+t[1], p[2]+t[2]] });
+  }
+  return makeAtoms(list);
+}
+const FCC = [[0,0,0],[0,.5,.5],[.5,0,.5],[.5,.5,0]];
+const shift = (pts, t) => pts.map(p => [p[0]+t[0], p[1]+t[1], p[2]+t[2]]);
+const sites = (pts, sp) => pts.map(f => ({ ...sp, f }));
+
+// Space-group operators (hexagonal setting) for corundum (R-3c) and ilmenite (R-3)
+const R3BAR = [p=>[p[0],p[1],p[2]], p=>[-p[1],p[0]-p[1],p[2]], p=>[-p[0]+p[1],-p[0],p[2]],
+               p=>[-p[0],-p[1],-p[2]], p=>[p[1],-p[0]+p[1],-p[2]], p=>[p[0]-p[1],p[0],-p[2]]];
+const R3C_EXTRA = [p=>[p[1],p[0],-p[2]+.5], p=>[p[0]-p[1],-p[1],-p[2]+.5], p=>[-p[0],-p[0]+p[1],-p[2]+.5],
+                   p=>[-p[1],-p[0],p[2]+.5], p=>[-p[0]+p[1],p[1],p[2]+.5], p=>[p[0],p[0]-p[1],p[2]+.5]];
+const RCENT = [[0,0,0],[2/3,1/3,1/3],[1/3,2/3,2/3]];
+
+// ---------- Structure builders ----------
+function build(proto, sp, P){
+  // sp: object of species keyed by role (A, B, X), each {el, ox}
+  const { A, B, X } = sp;
+  switch(proto){
+    case 'rocksalt': return makeAtoms([...sites(FCC, A), ...sites(shift(FCC,[.5,0,0]), X)]);
+    case 'cscl': case 'b2': return makeAtoms([{ ...A, f:[0,0,0] }, { ...X, f:[.5,.5,.5] }]);
+    case 'zincblende': return makeAtoms([...sites(FCC, A), ...sites(shift(FCC,[.25,.25,.25]), X)]);
+    case 'diamond': return makeAtoms([...sites(FCC, A), ...sites(shift(FCC,[.25,.25,.25]), A)]);
+    case 'fcc': return makeAtoms(sites(FCC, A));
+    case 'bcc': return makeAtoms(sites([[0,0,0],[.5,.5,.5]], A));
+    case 'hcp': return makeAtoms(sites([[1/3,2/3,.25],[2/3,1/3,.75]], A));
+    case 'wurtzite': { const u = 0.375;
+      return makeAtoms([...sites([[1/3,2/3,0],[2/3,1/3,.5]], A), ...sites([[1/3,2/3,u],[2/3,1/3,.5+u]], X)]); }
+    case 'fluorite': case 'antifluorite': {
+      const tet = []; for(const x of [.25,.75]) for(const y of [.25,.75]) for(const z of [.25,.75]) tet.push([x,y,z]);
+      return proto === 'fluorite' ? makeAtoms([...sites(FCC, A), ...sites(tet, X)]) : makeAtoms([...sites(tet, A), ...sites(FCC, X)]); }
+    case 'rutile': { const u = 0.305;
+      return makeAtoms([...sites([[0,0,0],[.5,.5,.5]], A), ...sites([[u,u,0],[-u,-u,0],[.5+u,.5-u,.5],[.5-u,.5+u,.5]], X)]); }
+    case 'cristobalite': {
+      const Si = [...FCC, ...shift(FCC,[.25,.25,.25])];
+      const O = shift(FCC,[.125,.125,.125]).concat(shift(FCC,[-.125,-.125,.125]), shift(FCC,[-.125,.125,-.125]), shift(FCC,[.125,-.125,-.125]));
+      return makeAtoms([...sites(Si, A), ...sites(O, X)]); }
+    case 'cuprite': return makeAtoms([...sites([[.25,.25,.25],[.75,.75,.25],[.75,.25,.75],[.25,.75,.75]], A), ...sites([[0,0,0],[.5,.5,.5]], X)]);
+    case 'reo3': return makeAtoms([{ ...A, f:[0,0,0] }, ...sites([[.5,0,0],[0,.5,0],[0,0,.5]], X)]);
+    case 'perovskite': case 'perovskite-o': case 'perovskite-t':
+      return makeAtoms([{ ...A, f:[.5,.5,.5] }, { ...B, f:[0,0,0] }, ...sites([[.5,0,0],[0,.5,0],[0,0,.5]], X)]);
+    case 'l12': return makeAtoms([{ ...B, f:[0,0,0] }, ...sites([[0,.5,.5],[.5,0,.5],[.5,.5,0]], A)]);
+    case 'corundum': return expand([...R3BAR, ...R3C_EXTRA], RCENT, [{ ...A, f:[0,0,0.3523] }, { ...X, f:[0.3064,0,0.25] }]);
+    case 'ilmenite': return expand(R3BAR, RCENT, [{ ...A, f:[0,0,0.3554] }, { ...B, f:[0,0,0.1464] }, { ...X, f:[0.3174,0.0234,0.2458] }]);
+    case 'k2nif4': { const zA = 0.355, zX = P.zX || 0.155; const I = [[0,0,0],[.5,.5,.5]];
+      const pts = (arr) => arr.flatMap(p => I.map(t => [p[0]+t[0], p[1]+t[1], p[2]+t[2]]));
+      return makeAtoms([...sites(pts([[0,0,0]]), B), ...sites(pts([[0,0,zA],[0,0,-zA]]), A),
+                        ...sites(pts([[.5,0,0],[0,.5,0],[0,0,zX],[0,0,-zX]]), X)]); }
+    case 'spinel': {
+      const u = P.u || 0.2625;
+      const Apts = [...shift(FCC,[1/8,1/8,1/8]), ...shift(FCC,[7/8,3/8,3/8])];
+      const Bpts = [[.5,.5,.5],[.25,.75,0],[.75,0,.25],[0,.25,.75]].flatMap(p => shift(FCC, p));
+      const Oideal = [];
+      for(let i=0;i<4;i++) for(let j=0;j<4;j++) for(let k=0;k<4;k++) if((i+j+k)%2===0) Oideal.push([.25+i/4,.25+j/4,.25+k/4]);
+      const Opts = Oideal.map(o => {
+        let best = null, bd = 1e9;
+        for(const a of Apts) for(const t of [[0,0,0]]) {
+          const v = o.map((x,i) => { let d = x - a[i]; d -= Math.round(d); return d; });
+          const dd = dot(v,v); if(dd < bd){ bd = dd; best = v; }
+        }
+        return o.map((x,i) => x + (u - 0.25)*8*best[i]);
+      });
+      return makeAtoms([...sites(Apts, A), ...sites(Bpts, B), ...sites(Opts, X)]);
+    }
+  }
+  return null;
+}
+
+// ---------- Prediction rules ----------
+function chi(el){ return EL[el][1]; }
+const fmt = (x, d=3) => (Math.round(x * 10**d) / 10**d).toFixed(d);
+const D10 = new Set(['Zn','Cd','Hg','Cu','Ag','Ga','In']);
+const GROUP13 = new Set(['B','Al','Ga','In']);
+
+function predict(input, P = 0, T = 298){
+  const { comp } = parseFormula(input);
+  const ox = assignOxidation(comp);
+  const why = [], notes = [];
+  let res = null;
+
+  if(ox.kind === 'element'){
+    const e = Object.keys(comp)[0];
+    for(const type of ['fcc','bcc','hcp','diamond']){
+      const v = ELEMENTS[type][e];
+      if(v != null){
+        const params = type === 'hcp' ? hexa(v[0], v[1]) : cubic(v);
+        why.push(`${e} is a pure element; its ambient structure is taken from the experimental reference table (${PROTO[type].name}).`);
+        if(type === 'diamond') why.push('Group-14 elements form four sp³ bonds, which gives the tetrahedral diamond network.');
+        if(type === 'bcc') why.push('Alkali and early transition metals with partly filled d-bands favour the more open bcc packing.');
+        if(type === 'fcc' || type === 'hcp') why.push('Close-packed metals maximise coordination (12 neighbours); fcc vs hcp is decided by small band-energy differences.');
+        if(P >= 50) notes.push('At very high pressure many elements transform to other close-packed or complex phases; this tool does not model elemental phase diagrams.');
+        res = { proto:type, sp:{ A:{ el:e, ox:0, site:e } }, params, confidence:'High', confWhy:'Experimental reference', known:true };
+        break;
+      }
+    }
+    if(!res) return { comp, error:`${e} has a complex ground-state structure (or isn't in the reference table). Rule-based prediction covers common fcc, bcc, hcp and diamond elements.` };
+  }
+  else if(ox.kind === 'intermetallic'){
+    const els = Object.keys(comp);
+    const n = els.map(e => comp[e]);
+    if(els.some(e => !MET[e])) return { comp, error:'One of the metals has no metallic radius in the table, so no intermetallic estimate is possible.' };
+    if(els.length === 2 && n[0] === 1 && n[1] === 1){
+      const [A, B] = els; const d = 0.97*(MET[A] + MET[B]);
+      why.push('No anion-forming element is present, so this is treated as an intermetallic compound.');
+      why.push('For 1:1 compounds of metals with different sizes and electron counts, ordering on a body-centred lattice (B2, CsCl-type) is the most common outcome (e.g. NiAl, CuZn, FeCo).');
+      why.push(`Lattice parameter from 12-coordinate metallic radii scaled to 8-fold coordination: a = 2·0.97(r<sub>${A}</sub>+r<sub>${B}</sub>)/√3 = ${fmt(2*d/Math.sqrt(3))} Å.`);
+      res = { proto:'b2', sp:{ A:{ el:A, ox:0, site:A }, X:{ el:B, ox:0, site:B } }, params:cubic(2*d/Math.sqrt(3)), confidence:'Low', confWhy:'Many 1:1 intermetallics adopt other structures (L1₀, B32, Laves-related)' };
+    } else if(els.length === 2 && n.includes(3) && n.includes(1)){
+      const A = els[n.indexOf(3)], B = els[n.indexOf(1)];
+      const a = Math.SQRT2*(MET[A] + MET[B]);
+      why.push('No anion-forming element is present, so this is treated as an intermetallic compound.');
+      why.push(`A₃B stoichiometry with similar-sized metals commonly orders on an fcc lattice as L1₂ (Cu₃Au-type): ${B} on the corners, ${A} on the face centres.`);
+      why.push(`Lattice parameter from the A–B contact along the face diagonal: a = √2(r<sub>${A}</sub>+r<sub>${B}</sub>) = ${fmt(a)} Å.`);
+      res = { proto:'l12', sp:{ A:{ el:A, ox:0, site:A }, B:{ el:B, ox:0, site:B } }, params:cubic(a), confidence:'Low', confWhy:'A₃B compounds also form D0₁₉, D0₂₂ and other orderings' };
+    } else return { comp, error:'Only 1:1 (B2) and 3:1 (L1₂) intermetallic rules are implemented. A trained model is needed for other metal-only compositions.' };
+  }
+  else if(ox.kind === 'unsupported') return { comp, error: ox.reason };
+  else res = predictIonic(comp, ox, P, T, why, notes);
+
+  if(res.error) return { comp, error:res.error, ox };
+  const atoms = build(res.proto, res.sp, res.extra || {});
+  return finish(comp, ox, res, atoms, why, notes, P, T);
+}
+
+function predictIonic(comp, ox, P, T, why, notes){
+  const X = ox.X, qX = ox.qX, nX = ox.nX, cats = ox.cations;
+  const oxStr = cats.map(c => `${c.el}<sup>${c.ox}+</sup>${c.n>1?' ×'+c.n:''}`).join(', ') + `, ${X}<sup>${Math.abs(qX)}−</sup>${nX>1?' ×'+nX:''}`;
+  why.push(`Charge balance: ${oxStr}.` + (ox.mixed ? ' Mixed valence is needed to make the formula neutral.' : ''));
+  const sp = (c, role) => ({ el:c.el, ox:c.ox, site:role });
+  const Xs = { el:X, ox:qX, site:'X' };
+  const counts = cats.map(c => c.n);
+
+  // ----- single cation -----
+  if(cats.length === 1){
+    const c = cats[0], A = sp(c,'A');
+    const r6 = rr(c.el, c.ox, 6), rX = rr(X, qX, 6), ratio = r6 / rX;
+    const dchi = chi(X) - chi(c.el);
+    // AX
+    if(c.n === 1 && nX === 1){
+      why.push(`Radius ratio r<sub>+</sub>/r<sub>−</sub> = ${fmt(r6,2)}/${fmt(rX,2)} = ${fmt(ratio)} (6-coordinate radii); electronegativity difference Δχ = ${fmt(dchi,2)}.`);
+      let proto, conf = 'Medium', cw = 'Radius-ratio rules are right for roughly two-thirds of simple binaries';
+      const covalentIIIV = GROUP13.has(c.el) && ['N','P','As','C'].includes(X);
+      if(covalentIIIV){ proto = 'tet'; why.push('Group-13 cation with a pnictide anion: strongly covalent sp³ bonding (III–V semiconductor), so four-fold tetrahedral coordination.'); conf = 'High'; cw = 'III–V compounds are almost always tetrahedral'; }
+      else if(D10.has(c.el) && ratio < 0.58){ proto = 'tet'; why.push(`${c.el}<sup>${c.ox}+</sup> is a d¹⁰ ion that forms directional, partly covalent bonds; with a ratio below ~0.58 it prefers tetrahedral coordination.`); }
+      else if(radius(c.el, c.ox, 8) && rr(c.el,c.ox,8) >= 1.65 && ['Cl','Br','I'].includes(X)){ proto = 'cscl'; why.push('A very large cation with a large, polarisable halide fits 8 neighbours: CsCl-type.'); conf = 'High'; cw = 'Holds for Cs halides'; }
+      else if(ratio >= 0.35){ proto = 'rocksalt'; why.push('Ratio is in the octahedral window, so each ion has 6 neighbours: rock-salt.'); }
+      else { proto = 'tet'; why.push('Ratio below ~0.35: the cation is too small for octahedral coordination, so tetrahedral (4-fold).'); }
+      if(proto === 'tet'){
+        proto = ['O','N'].includes(X) ? 'wurtzite' : 'zincblende';
+        why.push(proto === 'wurtzite' ? 'Oxides and nitrides with tetrahedral coordination usually stack hexagonally (wurtzite) because the more ionic bonds favour the hexagonal arrangement.' : 'Chalcogenides, halides and heavier pnictides usually adopt the cubic stacking (zinc blende); some, like CdS and ZnS, also have wurtzite polytypes.');
+        if(P >= 15){ notes.push(`At ${P} GPa tetrahedral semiconductors usually transform to rock-salt (e.g. GaN ~50 GPa, ZnS ~15 GPa). Pressure rule applied.`); proto = 'rocksalt'; conf = 'Low'; cw = 'Pressure-induced transition estimated from typical onset pressures'; }
+      } else if(proto === 'rocksalt'){
+        const kHal = ['K','Rb'].includes(c.el) && ['Cl','Br','I'].includes(X);
+        if((kHal && P >= 2) || P >= 30){ notes.push(`At ${P} GPa rock-salt compounds tend to transform to the denser CsCl-type (KCl ~2 GPa, NaCl ~30 GPa). Pressure rule applied.`); proto = 'cscl'; conf = 'Low'; cw = 'Pressure-induced transition estimated from typical onset pressures'; }
+      }
+      let params;
+      if(proto === 'rocksalt') { params = cubic(2*(r6 + rX)); why.push(`a = 2(r<sub>+</sub>+r<sub>−</sub>) = ${fmt(params.a)} Å.`); }
+      if(proto === 'cscl'){ const r8 = rr(c.el, c.ox, 8); params = cubic(2*(r8 + rX)/Math.sqrt(3)); why.push(`a = 2(r<sub>+</sub>+r<sub>−</sub>)/√3 with 8-coordinate radii = ${fmt(params.a)} Å.`); }
+      if(proto === 'zincblende' || proto === 'wurtzite'){
+        const d = (TET[c.el]||rr(c.el,c.ox,4)) + (TET[X]||rX);
+        why.push(`Bond length from tetrahedral covalent radii: d = ${fmt(d)} Å.`);
+        if(proto === 'zincblende'){ params = cubic(4*d/Math.sqrt(3)); why.push(`a = 4d/√3 = ${fmt(params.a)} Å.`); }
+        else { const a = d*Math.sqrt(8/3); params = hexa(a, a*Math.sqrt(8/3)); why.push(`Ideal wurtzite: a = d·√(8/3) = ${fmt(a)} Å, c = a·√(8/3) = ${fmt(params.c)} Å.`); }
+      }
+      return { proto, sp:{ A, X:Xs }, params, confidence:conf, confWhy:cw };
+    }
+    // AX2
+    if(c.n === 1 && nX === 2){
+      why.push(`Radius ratio r<sub>+</sub>/r<sub>−</sub> = ${fmt(ratio)}.`);
+      let proto, conf = 'Medium', cw = 'Radius-ratio rules for AX₂ are reliable at the extremes, weaker near boundaries';
+      const fluoriteCut = (c.ox >= 4 && X === 'O') ? 0.6 : 0.7;
+      if(ratio >= fluoriteCut){ proto = 'fluorite'; why.push(`Ratio ≥ ${fluoriteCut}: the cation can take 8 anions in a cube, giving fluorite (cation CN 8, anion CN 4).`); }
+      else if(ratio >= 0.35){
+        proto = 'rutile'; why.push('Ratio in the octahedral window: rutile, with edge-sharing octahedra running along c (cation CN 6, anion CN 3).');
+        if(c.ox === 4 && X === 'O' && ratio >= 0.5){ proto = 'fluorite'; conf = 'Low'; cw = 'Large 4+ oxides (ZrO₂, HfO₂) sit between rutile and fluorite';
+          notes.push('This size sits between rutile and fluorite. Such oxides (ZrO₂, HfO₂) are monoclinic at room temperature with 7-fold coordination; a cubic fluorite form appears at high temperature. The fluorite aristotype is shown.');
+          if(T >= 2600) notes.push(`At ${T} K the cubic fluorite form is expected to be stable.`); }
+        if(P >= 20 && proto === 'rutile'){ notes.push(`At ${P} GPa rutile-type compounds generally move to denser fluorite- or cotunnite-like phases. Pressure rule applied (fluorite shown).`); proto = 'fluorite'; conf = 'Low'; }
+      } else {
+        proto = 'cristobalite'; why.push('Ratio below ~0.35: four-fold coordination, so corner-sharing tetrahedra form a 3D network (SiO₂-like).');
+        notes.push('SiO₂-like networks have many near-degenerate polymorphs (quartz, tridymite, cristobalite); the ideal cubic cristobalite frame is shown as the simplest representative.');
+        conf = 'Low'; cw = 'Network formers have several polymorphs within a few kJ/mol';
+        if(P >= 9){ notes.push(`Above ~9 GPa SiO₂ becomes stishovite (rutile-type, octahedral Si). Pressure rule applied.`); proto = 'rutile'; }
+      }
+      let params;
+      if(proto === 'fluorite'){ const r8 = rr(c.el, c.ox, 8), r4 = rr(X, qX, 4); params = cubic(4*(r8 + r4)/Math.sqrt(3)); why.push(`a = 4(r<sub>+</sub>+r<sub>−</sub>)/√3 with CN 8/4 radii = ${fmt(params.a)} Å.`); }
+      if(proto === 'rutile'){ const d = r6 + rr(X,qX,3); params = tetra(2.34*d, 1.51*d); why.push(`Bond length d = ${fmt(d)} Å; using rutile's typical a ≈ 2.34d and c ≈ 1.51d gives a = ${fmt(params.a)} Å, c = ${fmt(params.c)} Å.`); }
+      if(proto === 'cristobalite'){ const d = rr(c.el,c.ox,4) + rr(X,qX,2); params = cubic(8*d/Math.sqrt(3)); why.push(`Ideal network: a = 8d/√3 with d = ${fmt(d)} Å gives a = ${fmt(params.a)} Å (real, buckled networks are denser).`); }
+      return { proto, sp:{ A, X:Xs }, params, confidence:conf, confWhy:cw };
+    }
+    // A2X
+    if(c.n === 2 && nX === 1){
+      if(['Cu','Ag'].includes(c.el) && c.ox === 1){
+        const d = rr(c.el,1,2) + rr(X,qX,4); const a = 4*d/Math.sqrt(3);
+        why.push(`${c.el}⁺ is a d¹⁰ ion that prefers linear 2-fold coordination, giving the cuprite structure (O in tetrahedra of ${c.el}).`);
+        why.push(`a = 4d/√3 with d = ${fmt(d)} Å gives a = ${fmt(a)} Å.`);
+        return { proto:'cuprite', sp:{ A, X:Xs }, params:cubic(a), confidence:'Medium', confWhy:'Strong d¹⁰ linear-coordination preference' };
+      }
+      const r4 = rr(c.el, c.ox, 4), rX8 = rr(X, qX, 8) || rX; const a = 4*(r4 + rX8)/Math.sqrt(3);
+      why.push('A₂X with a small monovalent cation: cations fill all tetrahedral holes of an fcc anion lattice (anti-fluorite).');
+      why.push(`a = 4(r<sub>+</sub>+r<sub>−</sub>)/√3 = ${fmt(a)} Å.`);
+      return { proto:'antifluorite', sp:{ A, X:Xs }, params:cubic(a), confidence:'High', confWhy:'Alkali oxides and sulfides are nearly all anti-fluorite' };
+    }
+    // AX3
+    if(c.n === 1 && nX === 3){
+      if(['Cl','Br','I'].includes(X)) return { error:'AX₃ halides with heavy anions form layered structures (BiI₃, AlCl₃ types) that this rule set does not build.' };
+      const d = r6 + rr(X, qX, 2); const a = 2*d;
+      why.push(`Ratio ${fmt(ratio)}: octahedral cation. With three anions per cation, octahedra share all six corners, giving the ReO₃ frame (an empty-A-site perovskite).`);
+      why.push(`a = 2(r<sub>+</sub>+r<sub>−</sub>) = ${fmt(a)} Å.`);
+      notes.push('Many ReO₃-type compounds (WO₃, AlF₃, FeF₃) are tilted or distorted versions of this cubic frame.');
+      return { proto:'reo3', sp:{ A, X:Xs }, params:cubic(a), confidence:'Medium', confWhy:'Usually distorted variants' };
+    }
+    // A2X3
+    if(c.n === 2 && nX === 3){
+      why.push(`Radius ratio r<sub>+</sub>/r<sub>−</sub> = ${fmt(ratio)}.`);
+      if(ratio < 0.3) return { error:'The cation is too small for octahedral sites; such oxides (B₂O₃-like) form trigonal or tetrahedral networks not covered by these rules.' };
+      if(ratio < 0.5){
+        const d = r6 + rr(X, qX, 4);
+        why.push('Ratio below 0.5: small trivalent cations occupy two-thirds of the octahedral holes in hexagonal close-packed anions (corundum).');
+        why.push(`Bond length d = ${fmt(d)} Å; corundum's typical a ≈ 2.485d and c ≈ 6.78d give a = ${fmt(2.485*d)} Å, c = ${fmt(6.78*d)} Å.`);
+        if(c.el === 'Mn' && c.ox === 3) notes.push('Mn³⁺ is Jahn–Teller active; Mn₂O₃ actually forms a distorted bixbyite.');
+        return { proto:'corundum', sp:{ A, X:Xs }, params:hexa(2.485*d, 6.78*d), confidence:'Medium', confWhy:'Size rule; Jahn–Teller ions are exceptions' };
+      }
+      return { error: ratio < 0.7
+        ? `Ratio ${fmt(ratio)} points to the C-type rare-earth (bixbyite, Ia-3, 80 atoms) structure. This prototype isn't built in the browser model yet.`
+        : `Ratio ${fmt(ratio)} points to the A-type La₂O₃ (hexagonal, 7-coordinate) structure. This prototype isn't built in the browser model yet.` };
+    }
+    return { error:`No prototype rule for an A${sub(c.n)}X${sub(nX)} stoichiometry. A trained model or candidate-search pipeline is needed here.` };
+  }
+
+  // ----- two cation sites -----
+  if(cats.length === 2){
+    // ABX3
+    if(counts[0] === 1 && counts[1] === 1 && nX === 3){
+      const [c1, c2] = cats;
+      const big = rr(c1.el,c1.ox,12) >= rr(c2.el,c2.ox,12) ? c1 : c2, small = big === c1 ? c2 : c1;
+      const rA = radius(big.el, big.ox, 12), rB = radius(small.el, small.ox, 6), rX = rr(X, qX, 6);
+      if(rA.approx) notes.push(`No tabulated 12-coordinate radius for ${big.el}<sup>${big.ox}+</sup>; it was extrapolated from lower coordination.`);
+      const t = (rA.r + rX)/(Math.SQRT2*(rB.r + rX));
+      const q = rA.r/rB.r, tau = rX/rB.r - big.ox*(big.ox - q/Math.log(q));
+      const mu = rB.r/rX;
+      why.push(`A site (larger cation) = ${big.el}, B site = ${small.el}. Radii: r<sub>A</sub> = ${fmt(rA.r,2)}, r<sub>B</sub> = ${fmt(rB.r,2)}, r<sub>X</sub> = ${fmt(rX,2)} Å.`);
+      why.push(`Bartel tolerance factor τ = r<sub>X</sub>/r<sub>B</sub> − n<sub>A</sub>(n<sub>A</sub> − (r<sub>A</sub>/r<sub>B</sub>)/ln(r<sub>A</sub>/r<sub>B</sub>)) = ${fmt(tau)}. τ < 4.18 predicts a perovskite (≈92% accurate on 576 known ABX₃ compounds).`);
+      why.push(`Goldschmidt tolerance factor t = (r<sub>A</sub>+r<sub>X</sub>)/√2(r<sub>B</sub>+r<sub>X</sub>) = ${fmt(t)}; octahedral factor μ = r<sub>B</sub>/r<sub>X</sub> = ${fmt(mu)}.`);
+      const extraDesc = { t, tau, mu };
+      if(tau < 4.18){
+        let proto;
+        if(t < 0.97){ proto = 'perovskite-o'; why.push('t < 0.97: the A cation is a little small for its cage, so BX₆ octahedra tilt, lowering symmetry to orthorhombic (GdFeO₃-type, Pnma).'); notes.push('The 3D model shows the untilted cubic aristotype; the real cell is a √2×2×√2 supercell with tilted octahedra.'); if(T >= 1300) notes.push(`At ${T} K octahedral tilts often weaken; many tilted perovskites become rhombohedral or cubic at high temperature.`); }
+        else if(t <= 1.03){ proto = 'perovskite'; why.push('0.97 ≤ t ≤ 1.03: ions fit the ideal cage, so the cubic perovskite (Pm-3m) is expected.'); }
+        else { proto = 'perovskite-t'; why.push('t > 1.03: the A cation is too large; the B cation off-centres (tetragonal ferroelectric, like BaTiO₃) or the structure switches to hexagonal stacking.'); notes.push('The 3D model shows the cubic aristotype. Distortions are small displacements away from this frame.'); if(T >= 400) notes.push('Above the Curie temperature such ferroelectric distortions vanish and the structure becomes cubic.'); }
+        const a = (2*(rB.r + rX) + Math.SQRT2*(rA.r + rX))/2;
+        why.push(`Pseudo-cubic a = average of 2(r<sub>B</sub>+r<sub>X</sub>) and √2(r<sub>A</sub>+r<sub>X</sub>) = ${fmt(a)} Å.`);
+        return { proto, sp:{ A:sp(big,'A'), B:sp(small,'B'), X:Xs }, params:cubic(a), confidence: proto === 'perovskite' ? 'High' : 'Medium', confWhy:'Bartel τ classification (~92% accurate)', descriptors:extraDesc };
+      }
+      const rA6 = rr(big.el, big.ox, 6);
+      if(rA6 < 1.0){
+        why.push('τ ≥ 4.18 and both cations are small enough for octahedra: corundum-derived ordering with alternating A and B layers (ilmenite).');
+        if(big.ox === 1) notes.push('With a monovalent A cation the closely related polar LiNbO₃-type (R3c) is common; the ilmenite model is shown.');
+        const d = (rA6 + rB.r)/2 + rr(X, qX, 4);
+        why.push(`Mean bond length d = ${fmt(d)} Å; ilmenite's typical a ≈ 2.455d, c ≈ 6.80d.`);
+        return { proto:'ilmenite', sp:{ A:sp(big,'A'), B:sp(small,'B'), X:Xs }, params:hexa(2.455*d, 6.80*d), confidence:'Medium', confWhy:'Bartel τ plus size rule', descriptors:extraDesc };
+      }
+      return { error:`τ = ${fmt(tau)} ≥ 4.18, so a perovskite is unlikely, but the A cation is too large for ilmenite. Expect a hexagonal or chain-type non-perovskite (e.g. δ-CsPbI₃, BaNiO₃ types), which this browser model doesn't build.`, descriptors:extraDesc };
+    }
+    // AB2X4 / A2BX4
+    if(((counts[0] === 1 && counts[1] === 2) || (counts[0] === 2 && counts[1] === 1)) && nX === 4){
+      const one = cats.find(c => c.n === 1), two = cats.find(c => c.n === 2);
+      if(['Si','Ge'].includes(one.el) && one.ox === 4 && two.ox === 2){
+        return { error:`A small 4+ cation (${one.el}) in tetrahedra with divalent partners points to olivine (Mg₂SiO₄-type, Pbnm). This prototype isn't built in the browser model yet.` };
+      }
+      if(rr(two.el, two.ox, 6) >= 1.0){
+        const rB = rr(one.el, one.ox, 6), rX = rr(X, qX, 6); const a = 2*(rB + rX), c = 3.25*a;
+        why.push(`The doubled cation ${two.el} is large (r₆ = ${fmt(rr(two.el,two.ox,6),2)} Å), so it sits in rock-salt layers between perovskite slabs of ${one.el}X₆ octahedra: K₂NiF₄-type (n = 1 Ruddlesden–Popper).`);
+        why.push(`a = 2(r<sub>B</sub>+r<sub>X</sub>) = ${fmt(a)} Å; c ≈ 3.25a = ${fmt(c)} Å (typical ratio).`);
+        return { proto:'k2nif4', sp:{ A:sp(two,'A'), B:sp(one,'B'), X:Xs }, params:tetra(a, c), extra:{ zX:(rB + rX)/c }, confidence:'Medium', confWhy:'Size rule; competing A₂BX₄ structures exist' };
+      }
+      // spinel: one cation on tetrahedral A site (8a), two on octahedral B (16d)
+      let Asite = one, Bsite = two, inverse = false;
+      if(one.ox === 4 && two.ox === 2) inverse = true;
+      if(ox.mixed){ Asite = cats.find(c => c.ox === Math.min(...cats.map(x => x.ox))); Bsite = cats.find(c => c !== Asite); }
+      const RA = rr(Asite.el, Asite.ox, 4) + rr(X, qX, 4), RB = rr(Bsite.el, Bsite.ox, 6) + rr(X, qX, 4);
+      const a = 2.0995*RB + Math.sqrt(5.8182*RA*RA - 1.4107*RB*RB);
+      const u = RA/(a*Math.sqrt(3)) + 0.125;
+      why.push(`AB₂X₄ with small cations: anions are cubic close-packed, with 1/8 of tetrahedral and 1/2 of octahedral holes filled (spinel).`);
+      why.push(`Tetrahedral bond R<sub>A</sub> = ${fmt(RA)} Å, octahedral bond R<sub>B</sub> = ${fmt(RB)} Å. Hill–Craig–Gibbs relation a = 2.0995R<sub>B</sub> + √(5.8182R<sub>A</sub>² − 1.4107R<sub>B</sub>²) = ${fmt(a)} Å, oxygen parameter u = ${fmt(u,4)}.`);
+      if(inverse) notes.push('With a 4+ cation and two 2+ cations the spinel is usually inverse: the 4+ ion goes octahedral and half the 2+ ions take the tetrahedral sites.');
+      if(ox.mixed) notes.push(`${Asite.el} is mixed-valent. Normal or inverse cation distribution (e.g. Fe₃O₄ is inverse) depends on crystal-field site preferences, which this rule set does not compute.`);
+      if(['Fe','Ni','Co','Mn','Cu','Cr'].includes(Bsite.el) || ['Fe','Ni','Co','Mn','Cu','Cr'].includes(Asite.el)) notes.push('Transition-metal spinels may be partly inverse because of crystal-field stabilisation; the model shows the normal distribution.');
+      return { proto:'spinel', sp:{ A:sp(Asite,'A'), B:sp(Bsite,'B'), X:Xs }, params:cubic(a), extra:{ u }, confidence:'High', confWhy:'Spinel is dominant for small-cation AB₂O₄' };
+    }
+  }
+  return { error:`No prototype rule matches this stoichiometry (${cats.map(c=>c.el+sub(c.n)).join('')}${X}${sub(nX)}). This is where a trained ML model or a generate-and-relax search is needed.` };
+}
+
+function finish(comp, ox, res, atoms, why, notes, P, T){
+  const proto = PROTO[res.proto];
+  const M = cellVectors(res.params);
+  const V = Math.abs(dot(M[0], cross(M[1], M[2])));
+  const mass = atoms.reduce((s,a) => s + EL[a.el][2], 0);
+  const density = mass / V * 1.66054;
+  // formula units in cell
+  const firstEl = Object.keys(comp)[0];
+  const Z = atoms.filter(a => a.el === firstEl).length / comp[firstEl];
+  // thermodynamic descriptors
+  const thermo = [];
+  if(ox.kind === 'ionic'){
+    const X = ox.X, rX = rr(X, ox.qX, 6);
+    let I = 0.5*ox.nX*ox.qX*ox.qX, nC = 0, rC = 0;
+    for(const c of ox.cations){ I += 0.5*c.n*c.ox*c.ox; nC += c.n; rC += c.n*rr(c.el, c.ox, 6); }
+    rC /= nC;
+    const d = rC + rX;
+    const U = 1202.5*2*I/d*(1 - 0.345/d);
+    thermo.push({ k:'Lattice energy (Kapustinskii estimate)', v:`≈ ${Math.round(U)} kJ/mol`, h:'Energy to separate one formula unit into gaseous ions. Uses mean ionic radii and the ionic strength 2I = Σnz². Typical accuracy ±5–10%.' });
+    if(proto.M) thermo.push({ k:'Madelung constant', v:proto.M.toFixed(4), h:'Geometric factor of the electrostatic energy for this structure type (reference value).' });
+    const dchi = chi(X) - ox.cations.reduce((s,c) => s + c.n*chi(c.el), 0)/nC;
+    thermo.push({ k:'Electronegativity difference Δχ', v:fmt(dchi,2), h:'Anion minus mean cation (Pauling scale).' });
+    thermo.push({ k:'Pauling ionic character', v:`${Math.round(100*(1 - Math.exp(-dchi*dchi/4)))}%`, h:'1 − exp(−Δχ²/4). Higher means more ionic bonding, where size-based rules work best.' });
+  }
+  if(res.descriptors){
+    thermo.push({ k:'Bartel tolerance factor τ', v:fmt(res.descriptors.tau), h:'Perovskite if τ < 4.18; the further below, the more stable (Bartel et al., Sci. Adv. 2019).' });
+    thermo.push({ k:'Goldschmidt tolerance factor t', v:fmt(res.descriptors.t), h:'≈1 means an ideal cubic fit; lower values imply tilting.' });
+    thermo.push({ k:'Octahedral factor μ', v:fmt(res.descriptors.mu), h:'r_B/r_X. Octahedra are stable above ~0.41.' });
+  }
+  thermo.push({ k:'Predicted density', v:`${fmt(density,2)} g/cm³`, h:'From the predicted cell volume and atomic masses; a quick check against measured densities.' });
+  thermo.push({ k:'Cell volume', v:`${fmt(V,1)} Å³ (${fmt(V/atoms.length,2)} Å³/atom)`, h:'' });
+
+  const kk = knownKey(comp);
+  let known = null;
+  if(kk && !res.known){
+    const k = KNOWN[kk];
+    const fam = p => ({ 'lithium-niobate':'ilmenite', antifluorite:'fluorite' }[p] || p.split('-')[0]);
+    const agree = k.p === res.proto;
+    const family = !agree && fam(k.p) === fam(res.proto);
+    const kname = k.name || (PROTO[k.p] ? PROTO[k.p].name : k.p);
+    let err = null, ref = null;
+    if(k.apc && res.proto.startsWith('perovskite')){ ref = k.apc; err = 100*(res.params.a - k.apc)/k.apc; }
+    else if(agree && k.a){ ref = k.a; err = 100*(res.params.a - k.a)/k.a; }
+    known = { formula:kk, name:kname, sg:k.sg, a:k.a, b:k.b, c:k.c, apc:k.apc, agree, family, err, ref };
+  }
+  return { comp, ox, proto:res.proto, protoInfo:proto, params:res.params, atoms, why, notes, confidence:res.confidence, confWhy:res.confWhy,
+           thermo, density, V, Z, known, P, T, M, xrd: xrd(atoms, res.params, M, ox) };
+}
+
+// ---------- Powder XRD (Cu Kα) ----------
+function xrd(atoms, params, M, ox){
+  const lam = 1.5406;
+  const V = dot(M[0], cross(M[1], M[2]));
+  const rs = [cross(M[1],M[2]), cross(M[2],M[0]), cross(M[0],M[1])].map(v => v.map(x => x/V));
+  const peaks = [];
+  const charge = (a) => a.ox || 0;
+  const hmax = Math.min(10, Math.ceil(2*Math.max(params.a, params.b, params.c)/lam));
+  for(let h=-hmax; h<=hmax; h++) for(let k=-hmax; k<=hmax; k++) for(let l=-hmax; l<=hmax; l++){
+    if(!h && !k && !l) continue;
+    const G = [0,1,2].map(i => h*rs[0][i] + k*rs[1][i] + l*rs[2][i]);
+    const g = Math.sqrt(dot(G,G)); const d = 1/g;
+    const st = lam/(2*d); if(st >= 1) continue;
+    const th = Math.asin(st), tt = 2*th/D2R;
+    if(tt < 10 || tt > 90) continue;
+    const s2 = (st/lam)**2;
+    let re = 0, im = 0;
+    for(const a of atoms){
+      const f = Math.max(EL[a.el][0] - charge(a), 1) * Math.exp(-2.8*s2);
+      const ph = 2*Math.PI*(h*a.f[0] + k*a.f[1] + l*a.f[2]);
+      re += f*Math.cos(ph); im += f*Math.sin(ph);
+    }
+    const F2 = re*re + im*im; if(F2 < 1e-3) continue;
+    const lp = (1 + Math.cos(2*th)**2)/(Math.sin(th)**2*Math.cos(th));
+    peaks.push({ tt, d, I:F2*lp, hkl:[h,k,l] });
+  }
+  peaks.sort((a,b) => a.tt - b.tt);
+  const merged = [];
+  for(const p of peaks){
+    const last = merged[merged.length-1];
+    if(last && Math.abs(last.tt - p.tt) < 0.02){ last.I += p.I; if(p.hkl.reduce((s,x)=>s+x,0) > last.hkl.reduce((s,x)=>s+x,0)) last.hkl = p.hkl; }
+    else merged.push({ ...p });
+  }
+  const max = Math.max(...merged.map(p => p.I), 1);
+  return merged.map(p => ({ ...p, I:100*p.I/max })).filter(p => p.I > 0.5);
+}
+
+// ---------- CIF ----------
+function toCIF(res){
+  const p = res.params, name = plainFormula(res.comp);
+  const lines = [
+    `# Generated by Crystal structure predictor (rule-based baseline)`,
+    `# Prototype: ${ascii(res.protoInfo.name)}; reported space group ${ascii(res.protoInfo.sg)} (written here in P1)`,
+    `data_${name}`,
+    `_chemical_formula_sum '${formulaOrder(res.comp).map(e => e + comp1(res.comp[e])).join(' ')}'`,
+    `_cell_length_a ${p.a.toFixed(4)}`, `_cell_length_b ${p.b.toFixed(4)}`, `_cell_length_c ${p.c.toFixed(4)}`,
+    `_cell_angle_alpha ${p.al.toFixed(2)}`, `_cell_angle_beta ${p.be.toFixed(2)}`, `_cell_angle_gamma ${p.ga.toFixed(2)}`,
+    `_cell_volume ${res.V.toFixed(3)}`, `_cell_formula_units_Z ${res.Z}`,
+    `_symmetry_space_group_name_H-M 'P 1'`, `_symmetry_Int_Tables_number 1`,
+    `loop_`, `_symmetry_equiv_pos_as_xyz`, `  'x, y, z'`,
+    `loop_`, `_atom_site_label`, `_atom_site_type_symbol`, `_atom_site_fract_x`, `_atom_site_fract_y`, `_atom_site_fract_z`, `_atom_site_occupancy`
+  ];
+  const cnt = {};
+  for(const a of res.atoms){ cnt[a.el] = (cnt[a.el]||0) + 1; lines.push(`  ${a.el}${cnt[a.el]} ${a.el} ${a.f.map(x => x.toFixed(5)).join(' ')} 1.0`); }
+  return lines.join('\n') + '\n';
+}
+function ascii(t){ const m={'₀':'0','₁':'1','₂':'2','₃':'3','₄':'4','₅':'5','₆':'6','₇':'7','₈':'8','₉':'9','α':'alpha-'}; return t.replace(/[₀-₉α]/g, ch => (/[₀-₉]/.test(ch)?'_':'') + m[ch]); }
+function comp1(n){ return n === 1 ? '1' : String(n); }
+
+if(typeof module !== 'undefined') module.exports = { predict, parseFormula, prettyFormula, toCIF, cellVectors, toCart, EL, KNOWN, rr };
+
+</script>
+<script>
+(() => {
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---------- atom colours ----------
+const COL = { O:'#E0483B', F:'#8FD14F', Cl:'#3CB44B', Br:'#A0522D', I:'#8E44AD', S:'#E8C547', Se:'#D49A3A', Te:'#B07A2E',
+  N:'#3D6FE0', P:'#F08A24', As:'#9B6FCF', C:'#5E6670', Na:'#8E7CC3', K:'#7B5EA7', Cs:'#5B3F8C', Rb:'#6A4E9A', Li:'#C08CE0',
+  Mg:'#4BAE9E', Ca:'#5DA87A', Sr:'#3E8E6B', Ba:'#2E7A5A', Be:'#9ED39E', Ti:'#9AA4AE', Zr:'#7FA3B5', Hf:'#6E92A8', Al:'#B8A9C9',
+  Si:'#E3B98A', Ge:'#BFA06A', Ga:'#C98E8E', In:'#A87A7A', B:'#F2B5B5', Zn:'#7D80B0', Cd:'#E1C16E', Hg:'#B8B8D0', Fe:'#D06D2B',
+  Co:'#E07FA0', Ni:'#4FA06A', Cu:'#C8803A', Ag:'#AEB6BF', Au:'#D4AF37', Pt:'#C9CCD3', Pd:'#7FA0B0', Mn:'#9C7AC7', Cr:'#8A99C7',
+  V:'#A6A6AB', La:'#5BB4D6', Ce:'#E6C35C', Nd:'#6FCFB0', Gd:'#7FD0D8', Y:'#6BC6C9', Sc:'#B5B5B5', Nb:'#73C2C9', Ta:'#5E9FB8',
+  W:'#3F7FB5', Mo:'#5AA5B5', Pb:'#6B6E78', Sn:'#6E8B9E', Sb:'#9E63B5', Bi:'#9E4FB5', Tl:'#A6544D' };
+const colorOf = el => COL[el] || `hsl(${(EL[el][0]*47)%360} 45% 55%)`;
+
+// ---------- state ----------
+let current = null, superOn = false, spin = !reduceMotion;
+$('#bSpin').setAttribute('aria-pressed', String(spin));
+
+// ---------- 3D viewer ----------
+const host = $('#canvasHost');
+let renderer, scene, camera, group, baseDist = 20, hasGL = typeof THREE !== 'undefined';
+function initGL(){
+  if(!hasGL){ host.insertAdjacentHTML('beforeend', '<div class="vempty">The 3D viewer needs the three.js library, which did not load. The structure data and CIF are still below.</div>'); return; }
+  try{
+    renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  }catch(e){ hasGL = false; host.insertAdjacentHTML('beforeend', '<div class="vempty">WebGL is not available in this browser, so the 3D view is off. The structure data and CIF are still below.</div>'); return; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  host.appendChild(renderer.domElement);
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(32, 1, 0.1, 1000);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 0.75));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.65); d1.position.set(5, 8, 10); scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.25); d2.position.set(-6, -3, 4); scene.add(d2);
+  group = new THREE.Group(); scene.add(group);
+  resize(); new ResizeObserver(resize).observe(host);
+  // interaction
+  let drag = null; const pts = new Map(); let pinch0 = null;
+  host.addEventListener('pointerdown', e => { host.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); drag = [e.clientX, e.clientY]; stopSpin(); $('#vhint').style.display = 'none'; });
+  host.addEventListener('pointermove', e => {
+    if(!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if(pts.size === 2){ const [a, b] = [...pts.values()]; const d = Math.hypot(a[0]-b[0], a[1]-b[1]); if(pinch0) zoom(pinch0/d); pinch0 = d; return; }
+    if(!drag) return;
+    const dx = e.clientX - drag[0], dy = e.clientY - drag[1]; drag = [e.clientX, e.clientY];
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(dy*0.008, dx*0.008, 0, 'XYZ'));
+    group.quaternion.premultiply(q);
+  });
+  const end = e => { pts.delete(e.pointerId); if(pts.size < 2) pinch0 = null; if(!pts.size) drag = null; };
+  host.addEventListener('pointerup', end); host.addEventListener('pointercancel', end);
+  host.addEventListener('wheel', e => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.08 : 1/1.08); }, { passive:false });
+  (function loop(){ requestAnimationFrame(loop); if(spin && group) group.rotateOnWorldAxis(new THREE.Vector3(0,1,0), 0.004); renderer.render(scene, camera); })();
+}
+function zoom(f){ const z = Math.min(Math.max(camera.position.z*f, baseDist*0.35), baseDist*3); camera.position.z = z; }
+function stopSpin(){ if(spin){ spin = false; $('#bSpin').setAttribute('aria-pressed','false'); } }
+function resize(){ if(!renderer) return; const w = host.clientWidth, h = host.clientHeight || 380; renderer.setSize(w, h, false); camera.aspect = w/h; camera.updateProjectionMatrix(); }
+
+function displayAtoms(res){
+  const n = superOn ? 2 : 1, M = res.M, eps = 1e-3;
+  const isIonic = res.ox && res.ox.kind === 'ionic';
+  const base = [];
+  for(const a of res.atoms) for(let i=-1;i<=n;i++) for(let j=-1;j<=n;j++) for(let k=-1;k<=n;k++){
+    const f = [a.f[0]+i, a.f[1]+j, a.f[2]+k];
+    const inside = f.every(v => v >= -eps && v <= n + eps);
+    const near = f.every(v => v >= -0.3 && v <= n + 0.3);
+    if(near) base.push({ ...a, f, inside, c:toCart(f, M) });
+  }
+  // bond cutoffs: per cation element, 1.15× its shortest distance to an anion (ionic); 1.08× shortest for metals
+  const cut = {};
+  const bondable = (a, b) => isIonic ? ((a.ox > 0) !== (b.ox > 0)) : true;
+  const inside = base.filter(a => a.inside);
+  for(const a of inside){
+    for(const b of base){ if(a === b || !bondable(a, b)) continue;
+      const d = Math.hypot(a.c[0]-b.c[0], a.c[1]-b.c[1], a.c[2]-b.c[2]); if(d < 0.5) continue;
+      const key = isIonic ? (a.ox > 0 ? a.el+a.ox : b.el+b.ox) : 'm';
+      if(!cut[key] || d < cut[key]) cut[key] = d; }
+  }
+  const fac = isIonic ? 1.15 : 1.08;
+  // large, high-coordination cations (perovskite A sites, etc.) are drawn without bonds to keep the frame readable
+  const gmin = Math.min(...Object.values(cut));
+  for(const k in cut) if(isIonic && cut[k] > 1.25*gmin) cut[k] = -1;
+  const shown = new Set(inside), bonds = [];
+  for(const a of inside){
+    for(const b of base){ if(a === b || !bondable(a, b)) continue;
+      const d = Math.hypot(a.c[0]-b.c[0], a.c[1]-b.c[1], a.c[2]-b.c[2]);
+      const key = isIonic ? (a.ox > 0 ? a.el+a.ox : b.el+b.ox) : 'm';
+      if(d <= cut[key]*fac){
+        // show anions just outside the cell if they complete a cation's polyhedron
+        if(!b.inside && !(isIonic && a.ox > 0 && b.ox < 0)) continue;
+        shown.add(b); bonds.push([a, b]);
+      }
+    }
+  }
+  return { atoms:[...shown], bonds };
+}
+
+function drawStructure(res){
+  if(!hasGL || !group) return;
+  while(group.children.length){ const o = group.children.pop(); o.geometry && o.geometry.dispose(); o.material && o.material.dispose(); }
+  if(!res){ return; }
+  const { atoms, bonds } = displayAtoms(res);
+  const M = res.M, n = superOn ? 2 : 1;
+  const centre = toCart([n/2, n/2, n/2], M);
+  const isIonic = res.ox && res.ox.kind === 'ionic';
+  const rad = a => {
+    let r = 0.5;
+    if(isIonic){ const v = rr(a.el, a.ox, 6); r = isNaN(v) ? 0.6 : v; r = a.ox < 0 ? 0.2 + 0.25*r : 0.3 + 0.3*r; }
+    else r = 0.55;
+    return r;
+  };
+  const sphereGeo = new THREE.SphereGeometry(1, 28, 18);
+  const mats = {};
+  for(const a of atoms){
+    const key = a.el;
+    mats[key] = mats[key] || new THREE.MeshStandardMaterial({ color:new THREE.Color(colorOf(a.el)), roughness:0.45, metalness:0.08 });
+    const m = new THREE.Mesh(sphereGeo, mats[key]);
+    const r = rad(a); m.scale.set(r, r, r);
+    m.position.set(a.c[0]-centre[0], a.c[1]-centre[1], a.c[2]-centre[2]);
+    group.add(m);
+  }
+  // bonds: two half-cylinders coloured by each end
+  const cyl = new THREE.CylinderGeometry(0.09, 0.09, 1, 10);
+  const up = new THREE.Vector3(0, 1, 0);
+  const seen = new Set();
+  for(const [a, b] of bonds){
+    const id = [a.c, b.c].map(c => c.map(v => v.toFixed(2)).join(',')).sort().join('|');
+    if(seen.has(id)) continue; seen.add(id);
+    const A = new THREE.Vector3(a.c[0]-centre[0], a.c[1]-centre[1], a.c[2]-centre[2]);
+    const B = new THREE.Vector3(b.c[0]-centre[0], b.c[1]-centre[1], b.c[2]-centre[2]);
+    const mid = A.clone().add(B).multiplyScalar(0.5);
+    for(const [P, Q, at] of [[A, mid, a], [mid, B, b]]){
+      const dir = Q.clone().sub(P), len = dir.length();
+      const m = new THREE.Mesh(cyl, mats[at.el]);
+      m.scale.set(1, len, 1);
+      m.position.copy(P.clone().add(Q).multiplyScalar(0.5));
+      m.quaternion.setFromUnitVectors(up, dir.normalize());
+      group.add(m);
+    }
+  }
+  // unit cell edges
+  const css = getComputedStyle(document.documentElement);
+  const lineCol = new THREE.Color(css.getPropertyValue('--muted').trim() || '#888');
+  const corners = []; for(const x of [0,1]) for(const y of [0,1]) for(const z of [0,1]) corners.push([x,y,z]);
+  const pos = [];
+  for(const p of corners) for(const q of corners){
+    const diff = p.reduce((s, v, i) => s + Math.abs(v - q[i]), 0);
+    if(diff === 1 && p.join() < q.join()){
+      const P = toCart(p, M), Q = toCart(q, M);
+      pos.push(P[0]-centre[0], P[1]-centre[1], P[2]-centre[2], Q[0]-centre[0], Q[1]-centre[1], Q[2]-centre[2]);
+    }
+  }
+  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  group.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color:lineCol })));
+  // frame the camera
+  let rmax = 1; for(const a of atoms){ rmax = Math.max(rmax, Math.hypot(a.c[0]-centre[0], a.c[1]-centre[1], a.c[2]-centre[2]) + 0.8); }
+  baseDist = rmax / Math.tan(16*Math.PI/180) * (camera.aspect < 1 ? 1.15/camera.aspect : 0.92);
+  camera.position.set(0, 0, baseDist); camera.lookAt(0, 0, 0);
+}
+function resetView(){ if(!group) return; group.quaternion.setFromEuler(new THREE.Euler(0.42, -0.62, 0)); if(camera) camera.position.z = baseDist; }
+
+// ---------- rendering of results ----------
+const pf = comp => formulaOrder(comp).map(e => esc(e) + (comp[e] === 1 ? '' : `<sub>${comp[e]}</sub>`)).join('');
+const f3 = (x, d=3) => (+x).toFixed(d);
+
+function renderSummary(res, input){
+  const box = $('#summary');
+  if(res.error){
+    const comp = res.comp;
+    box.innerHTML = `${comp ? `<div class="formula-big">${pf(comp)}</div>` : ''}
+      <div class="errorbox"><h2>No structure predicted</h2><p>${res.error}</p>
+      <p class="muted small">The rule set covers common binary oxides, halides, chalcogenides and pnictides, perovskites, spinels, layered perovskites, and simple metals and intermetallics. Other chemistries need the trained model and candidate search described below.</p></div>`;
+    $('#legend').innerHTML = '';
+    return;
+  }
+  const p = res.params, info = res.protoInfo;
+  const lat = info.sys === 'cubic' ? [['a', f3(p.a)+' Å']] :
+              info.sys === 'tetragonal' ? [['a = b', f3(p.a)+' Å'], ['c', f3(p.c)+' Å']] :
+              [['a = b', f3(p.a)+' Å'], ['c', f3(p.c)+' Å'], ['γ', '120°']];
+  const cells = [...lat, ['Z', res.Z], ['Atoms in cell', res.atoms.length], ['Density', f3(res.density, 2)+' g/cm³']];
+  const pseudo = res.proto === 'perovskite-o' || res.proto === 'perovskite-t';
+  let ref = '';
+  if(res.known){
+    const k = res.known;
+    const lat2 = [k.a && `a = ${k.a}`, k.b && `b = ${k.b}`, k.c && `c = ${k.c}`].filter(Boolean).join(', ');
+    const errTxt = k.err != null && Math.abs(k.err) < 0.05 ? ' Predicted a matches the measured value to within 0.1%.' : k.err != null ? ` Predicted ${k.apc && pseudo ? 'pseudo-cubic ' : ''}a differs by ${k.err > 0 ? '+' : ''}${f3(k.err, 1)}% from experiment${k.apc && pseudo ? ` (${k.ref} Å)` : ''}.` : '';
+    ref = k.agree
+      ? `<p class="ref"><strong>Matches experiment.</strong> ${esc(k.formula)} is reported as ${esc(k.name)}, ${esc(k.sg)}, ${lat2} Å.${errTxt}</p>`
+      : k.family
+      ? `<p class="ref diff"><strong>Right family, different distortion.</strong> Experiment reports ${esc(k.name)} (${esc(k.sg)}, ${lat2} Å).${errTxt}</p>`
+      : `<p class="ref diff"><strong>Differs from experiment.</strong> ${esc(k.formula)} is reported as ${esc(k.name)} (${esc(k.sg)}, ${lat2} Å). The rules point elsewhere, which shows their limits for this composition.</p>`;
+  }
+  const cond = (res.P > 0 || Math.abs(res.T - 298) > 1) ? ` at ${res.P} GPa, ${res.T} K` : ' at ambient conditions';
+  box.innerHTML = `
+    <div class="formula-big">${pf(res.comp)}</div>
+    <p class="proto">${esc(info.name)}</p>
+    <p class="sgline">Space group <b>${esc(info.sg)}</b> (No. ${info.num}), ${esc(info.sys)}${esc(cond)}</p>
+    <dl class="params">${cells.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+    <div class="conf"><span class="badge ${res.confidence}">${res.confidence} confidence</span><span>${esc(res.confWhy)}</span></div>
+    ${ref}
+    ${res.notes.length ? `<ul class="notes">${res.notes.map(n => `<li>${n}</li>`).join('')}</ul>` : ''}`;
+  // legend
+  const seen = new Map();
+  for(const a of res.atoms){ const k = a.el + (a.ox || ''); if(!seen.has(k)) seen.set(k, a); }
+  $('#legend').innerHTML = [...seen.values()].map(a => {
+    const ch = a.ox ? `<sup>${Math.abs(a.ox)}${a.ox > 0 ? '+' : '−'}</sup>` : '';
+    return `<span><i style="background:${colorOf(a.el)}"></i>${esc(a.el)}${ch}</span>`;
+  }).join('');
+}
+
+function renderTabs(res){
+  if(res.error){
+    $('#p-why').innerHTML = `<p class="muted">${res.error}</p>`;
+    $('#p-th').innerHTML = $('#p-xrd').innerHTML = $('#p-cif').innerHTML = '<p class="muted">Available once a structure is predicted.</p>';
+    return;
+  }
+  $('#p-why').innerHTML = `<ol class="why">${res.why.map(w => `<li>${w}</li>`).join('')}</ol>`;
+  $('#p-th').innerHTML = `<div class="scroll"><table><thead><tr><th>Quantity</th><th>Value</th><th>What it tells you</th></tr></thead><tbody>
+    ${res.thermo.map(t => `<tr><td>${esc(t.k)}</td><td class="num">${esc(t.v)}</td><td class="help">${esc(t.h)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted small" style="margin:12px 0 0;max-width:78ch">Formation energy, energy above the convex hull and Gibbs free energy need an energy model (DFT or a machine-learned potential) and competing phases. Those come from the server-side pipeline.</p>`;
+  $('#p-xrd').innerHTML = xrdView(res.xrd);
+  $('#p-cif').innerHTML = `<div class="rowbtn"><button type="button" id="copyCif">Copy CIF</button><span class="muted small" id="copyMsg">Paste into VESTA, Mercury or pymatgen. Atoms are written in P1.</span></div>
+    <textarea id="cif" readonly spellcheck="false" aria-label="CIF file contents">${esc(toCIF(res))}</textarea>`;
+  $('#copyCif').addEventListener('click', async () => {
+    const ta = $('#cif'); let ok = false;
+    try{ await navigator.clipboard.writeText(ta.value); ok = true; }catch(e){ try{ ta.select(); ok = document.execCommand('copy'); }catch(_){} }
+    $('#copyMsg').textContent = ok ? 'Copied to clipboard.' : 'Copy was blocked. Select the text below and copy it manually.';
+  });
+}
+
+function xrdView(peaks){
+  const W = 760, H = 250, L = 40, Rr = 12, T = 18, B = 34;
+  const x = t => L + (t - 10)/80*(W - L - Rr), y = I => H - B - I/100*(H - B - T);
+  let prof = '';
+  const sig = 0.18;
+  for(let t = 10; t <= 90; t += 0.05){
+    let I = 0; for(const p of peaks){ const d = t - p.tt; if(Math.abs(d) < 1.2) I += p.I*Math.exp(-d*d/(2*sig*sig)); }
+    prof += (prof ? 'L' : 'M') + x(t).toFixed(1) + ' ' + y(Math.min(I, 100)).toFixed(1);
+  }
+  const ticks = [10,20,30,40,50,60,70,80,90];
+  const top = [...peaks].sort((a,b) => b.I - a.I).slice(0, 7);
+  const hkl = p => '(' + p.hkl.map(v => Math.abs(v)).join(' ') + ')';
+  const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Simulated powder X-ray diffraction pattern, Cu K-alpha">
+    <line class="axis" x1="${L}" y1="${H-B}" x2="${W-Rr}" y2="${H-B}"/>
+    ${ticks.map(t => `<line class="axis" x1="${x(t)}" y1="${H-B}" x2="${x(t)}" y2="${H-B+4}"/><text x="${x(t)}" y="${H-B+17}" text-anchor="middle">${t}</text>`).join('')}
+    <text x="${(W+L)/2}" y="${H-2}" text-anchor="middle">2θ (degrees, Cu Kα)</text>
+    <text x="12" y="${(H-B+T)/2}" text-anchor="middle" transform="rotate(-90 12 ${(H-B+T)/2})">Intensity</text>
+    ${peaks.map(p => `<line class="stick" x1="${x(p.tt).toFixed(1)}" y1="${H-B}" x2="${x(p.tt).toFixed(1)}" y2="${y(p.I).toFixed(1)}"/>`).join('')}
+    <path class="prof" d="${prof}"/>
+    ${top.map(p => `<text class="lab" x="${x(p.tt).toFixed(1)}" y="${(y(p.I)-5).toFixed(1)}" text-anchor="middle">${hkl(p)}</text>`).join('')}
+  </svg>`;
+  const rows = [...peaks].sort((a,b) => b.I - a.I).slice(0, 10).sort((a,b) => a.tt - b.tt);
+  return `<div class="xrd scroll"><div style="min-width:520px">${svg}</div></div>
+    <div class="scroll" style="margin-top:12px"><table><thead><tr><th>2θ (°)</th><th>d (Å)</th><th>Relative intensity</th><th>hkl</th></tr></thead><tbody>
+    ${rows.map(p => `<tr><td class="num">${f3(p.tt, 2)}</td><td class="num">${f3(p.d, 4)}</td><td class="num">${f3(p.I, 1)}</td><td>${hkl(p)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted small" style="margin:12px 0 0;max-width:78ch">Kinematic simulation with approximate scattering factors and no thermal or preferred-orientation effects. Use it to compare peak positions with a measured pattern; relative intensities are indicative only.</p>`;
+}
+
+// ---------- run ----------
+function run(){
+  const input = $('#formula').value;
+  const P = Math.max(0, parseFloat($('#pressure').value) || 0);
+  const T = Math.max(0, parseFloat($('#temp').value) || 298);
+  let res;
+  try{ res = predict(input, P, T); }catch(e){ res = { error: esc(e.message) }; }
+  current = res.error ? null : res;
+  renderSummary(res, input);
+  renderTabs(res);
+  if(hasGL){
+    const empty = host.querySelector('.vempty'); if(empty) empty.remove();
+    drawStructure(current);
+    if(!current) host.insertAdjacentHTML('beforeend', '<div class="vempty">No unit cell to show for this composition.</div>');
+    else resetView();
+  }
+}
+$('#q').addEventListener('submit', e => { e.preventDefault(); run(); });
+document.querySelectorAll('.examples button').forEach(b => b.addEventListener('click', () => { $('#formula').value = b.textContent; run(); }));
+$('#bSuper').addEventListener('click', e => { superOn = !superOn; e.currentTarget.setAttribute('aria-pressed', String(superOn)); if(current){ const q = group.quaternion.clone(); drawStructure(current); group.quaternion.copy(q); } });
+$('#bSpin').addEventListener('click', e => { spin = !spin; e.currentTarget.setAttribute('aria-pressed', String(spin)); });
+$('#bReset').addEventListener('click', resetView);
+
+// tabs
+const tabs = [...document.querySelectorAll('[role="tab"]')];
+function selectTab(t){
+  tabs.forEach(x => { const on = x === t; x.setAttribute('aria-selected', String(on)); x.tabIndex = on ? 0 : -1; $('#' + x.getAttribute('aria-controls')).hidden = !on; });
+  t.focus();
+}
+tabs.forEach((t, i) => {
+  t.addEventListener('click', () => selectTab(t));
+  t.addEventListener('keydown', e => {
+    if(e.key === 'ArrowRight') selectTab(tabs[(i+1) % tabs.length]);
+    if(e.key === 'ArrowLeft') selectTab(tabs[(i-1+tabs.length) % tabs.length]);
+  });
+});
+
+initGL();
+run();
+})();
+</script>
+</body>
+</html>
